@@ -13,6 +13,16 @@ An agent that reviews viaSocket plugs, asks the reviewer in Slack, and records e
 
 Slack and viaSocket Table each have a dropdown listing every connected account (for example the Slack workspace or the Table database). Pick one to make it active, or choose "Connect another account…". Old connections are kept. Switching clears the saved channel, team leader and table picks, because they belong to the old account; pick them again and save so the automations use the new account. Saving checks that the chosen tables have the required columns. To use a different login, use the **Use a different login** link under the app: the sign-in popup always uses the account the browser is already signed into and the agent cannot change that, so the connection is made in a private window. The page notices the new account within a few seconds and offers **Use this account**. After switching, the pickers preselect `plug_decisions` and `plug_queue` if the new account already has them, and a **Required table columns** box lists what to create otherwise (with a **Check** button). Accounts that are not in use can be removed.
 
+## Add-ons
+
+Users can build on top of the review agent without changing it. Pick a ready-made add-on (decision digest, reject alert, developer summary) or describe one in plain words. The agent turns the words into a small spec (AI), then checks it against reality in plain code: does the data exist, are the apps connected, is it something it can build. It shows a verdict (I can build this / part of this / I can't, and why) and builds nothing until the user approves. Then: preview (computed from the real decisions table and double-checked), send a test, turn on.
+
+- Add-ons only **read** the decisions table and send a message. They never write to the core's tables or flows. They run as their own viaSocket automations (`Add-on: …`), kept in `DATA_DIR/addons.json`, and can be paused, resumed, deleted, or all paused at once.
+- Add-ons are built from vetted step templates. The AI only fills in parameters, it never writes code.
+- "Check for problems" reads an add-on's recent runs. viaSocket's run history does not keep an app's own error text, so the cause is found by checking the likely culprits (connection, channel, table) with read-only probes.
+- Limits: output goes to Slack only for now (other apps are reported, not built); no writing into other apps; 2,000 decision rows are read per run; schedule times follow viaSocket's schedule time zone.
+- Safety nets: `node --env-file=.env scripts/core-check.mjs baseline` then `compare` proves the core automations are byte-for-byte unchanged. `scripts/addon-run-test.mjs` and `scripts/addon-diagnose-test.mjs` run an add-on's real steps in viaSocket and break one on purpose.
+
 ## Run locally
 
 ```bash

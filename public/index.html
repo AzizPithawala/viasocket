@@ -87,6 +87,22 @@
   .app.conn { display: grid; grid-template-columns: 30px 1fr auto; gap: 4px 12px; align-items: center; }
   .app.conn .pick { grid-column: 2 / -1; }
   .app.conn select { margin-top: 2px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 7px 12px; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; }
+  .chip:hover { border-color: var(--accent); }
+  textarea { width: 100%; font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; outline: none; resize: vertical; min-height: 72px; }
+  textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .verdict { margin-top: 14px; border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--surface-2); }
+  .verdict h4, .addon h4 { margin: 0 0 6px; font-size: 14.5px; }
+  .verdict ul { margin: 6px 0; padding-left: 18px; color: var(--muted); font-size: 13.5px; }
+  .verdict .plan { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; font-size: 14px; }
+  .preview { white-space: pre-wrap; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-top: 10px; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .addon { padding: 12px 0; border-top: 1px solid var(--border); }
+  .addon:first-of-type { border-top: 0; }
+  .addon .top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .addon .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .run { font-size: 13px; padding: 6px 0; color: var(--muted); }
   .linkbtn { background: none; border: 0; padding: 4px 0; color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; }
   .linkbtn:hover { text-decoration: underline; }
   .linkbtn.danger { color: var(--red); }
@@ -193,6 +209,19 @@
         <h3>Recent decisions</h3>
         <p class="sub">Click a decision to read the full findings.</p>
         <div id="decisions"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+      </section>
+
+      <section class="card" id="addons-card">
+        <h3>Add-ons</h3>
+        <p class="sub">Build on top of the review agent. Say what you want and the agent checks what is possible before it builds anything. The review pipeline itself is never changed.</p>
+        <div class="chips" id="ad-gallery"></div>
+        <label for="ad-text">Or describe it in your own words</label>
+        <textarea id="ad-text" placeholder="e.g. Every Friday at 5pm, send a Slack message with how many plugs were approved, rejected and improved this week"></textarea>
+        <div class="btnrow"><button class="primary" id="ad-analyze">Check what I can build</button></div>
+        <div id="ad-verdict" aria-live="polite"></div>
+        <h4 style="margin:18px 0 4px">Your add-ons</h4>
+        <div id="ad-list"><p class="hint">None yet.</p></div>
+        <button type="button" class="linkbtn danger" id="ad-pause-all">Pause all add-ons</button>
       </section>
     </div>
 
@@ -474,9 +503,81 @@ $('app-q').oninput = () => {
   }, 300)
 }
 
+/* ---------- Add-ons ---------- */
+const VERDICT = { can_build: ['I can build this', 'b-green'], partial: ['I can build part of this', 'b-amber'], cannot: ["I can't build this", 'b-red'] }
+let adCurrent = null
+const post = (path, body, method = 'POST') => api(path, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+
+async function loadGallery() {
+  const items = await api('/api/addons/gallery').catch(() => [])
+  $('ad-gallery').innerHTML = items.map((g) => `<button type="button" class="chip" data-gallery="${esc(g.id)}" title="${esc(g.description)}">${esc(g.title)}</button>`).join('')
+  document.querySelectorAll('[data-gallery]').forEach((b) => { b.onclick = () => analyzeAddon({ galleryId: b.dataset.gallery }) })
+}
+
+async function analyzeAddon(body) {
+  const btn = $('ad-analyze'); btn.disabled = true; btn.textContent = 'Checking…'
+  $('ad-verdict').innerHTML = '<p class="hint">Reading your request and checking it against what the agent has…</p>'
+  try { adCurrent = await post('/api/addons/analyze', body); renderVerdict() } catch (e) { $('ad-verdict').innerHTML = `<p class="hint">${esc(e.message)}</p>` }
+  btn.disabled = false; btn.textContent = 'Check what I can build'
+}
+$('ad-analyze').onclick = () => analyzeAddon({ text: $('ad-text').value })
+
+async function renderVerdict() {
+  const v = adCurrent; const [label, cls] = VERDICT[v.verdict] || ['Unknown', 'b-gray']
+  const appBadge = (a) => `<span class="badge ${a.status === 'connected' ? 'b-green' : 'b-amber'}">${esc(a.status)}</span>`
+  let channels = []
+  if (v.verdict !== 'cannot' && v.needs.some((n) => n.type === 'channel')) channels = await api('/api/options/channels').catch(() => [])
+  $('ad-verdict').innerHTML = `<div class="verdict">
+    <span class="badge ${cls}">${esc(label)}</span>
+    <h4 style="margin-top:8px">${esc(v.summary || 'Your request')}</h4>
+    ${v.plan ? `<div class="plan"><b>What it will do:</b> ${esc(v.plan)}</div>` : ''}
+    ${v.apps.length ? `<b style="font-size:13px">Apps</b><ul>${v.apps.map((a) => `<li>${esc(a.name)} ${appBadge(a)} <span class="hint">${esc(a.detail || '')}</span></li>`).join('')}</ul>` : ''}
+    ${v.issues.length ? `<b style="font-size:13px">What stops it</b><ul>${v.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
+    ${v.notes.length ? `<ul>${v.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+    ${v.questions.length ? `<b style="font-size:13px">Not clear from your request</b><ul>${v.questions.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
+    ${v.verdict !== 'cannot' ? `<div class="field" style="margin-top:10px"><label for="ad-channel">Slack channel for the message</label><select id="ad-channel"><option value="">Choose…</option>${channels.map((c) => `<option value="${esc(c.value)}">#${esc(c.label)}</option>`).join('')}</select></div>
+      <div class="btnrow"><button id="ad-preview">Preview</button><button id="ad-test">Send a test to the channel</button><button class="primary" id="ad-enable">Approve and turn on</button></div>
+      <div id="ad-preview-box"></div>` : ''}
+  </div>`
+  if (v.verdict === 'cannot') return
+  const params = () => ({ channelId: $('ad-channel').value })
+  const needChannel = () => { if (!$('ad-channel').value) { toast('Choose a Slack channel first'); return false } return true }
+  const withBusy = async (btn, text, fn) => { const old = btn.textContent; btn.disabled = true; btn.textContent = text; try { await fn() } catch (e) { toast(e.message) } btn.disabled = false; btn.textContent = old }
+  $('ad-preview').onclick = (e) => withBusy(e.target, 'Reading…', async () => {
+    const p = await post('/api/addons/preview', { spec: v.spec })
+    $('ad-preview-box').innerHTML = `<div class="preview">${esc(p.text)}</div><p class="hint">${p.rowsRead} decision${p.rowsRead === 1 ? '' : 's'} read. ${p.verified ? 'Counts double-checked against the table.' : 'The double-check did not match. Do not turn this on.'}${p.example ? '' : ''}</p>`
+  })
+  $('ad-test').onclick = (e) => { if (needChannel()) withBusy(e.target, 'Sending…', async () => { await post('/api/addons/test', { spec: v.spec, params: params() }); toast('Test message sent') }) }
+  $('ad-enable').onclick = (e) => { if (needChannel()) withBusy(e.target, 'Turning on…', async () => { const r = await post('/api/addons/enable', { spec: v.spec, params: params() }); toast('Add-on is on' + (r.schedule ? ': ' + r.schedule : '')); $('ad-verdict').innerHTML = ''; loadAddons() }) }
+}
+
+async function loadAddons() {
+  const items = await api('/api/addons').catch(() => [])
+  $('ad-list').innerHTML = items.length ? items.map((a) => `<div class="addon" data-id="${esc(a.id)}">
+      <div class="top"><span class="badge ${a.status === 'enabled' ? 'b-green' : 'b-gray'}">${a.status === 'enabled' ? 'On' : 'Paused'}</span><b>${esc(a.title)}</b></div>
+      <div class="meta">${esc(a.schedule || (a.kind === 'event_alert' ? 'Runs on every rejected plug' : ''))} · #${esc(a.params.channelLabel)}</div>
+      ${a.stale.length ? `<div class="note">${esc(a.stale.join('. '))}. Delete it and build it again to use the current account.</div>` : ''}
+      <div class="actions"><button class="linkbtn" data-act="${a.status === 'enabled' ? 'pause' : 'resume'}">${a.status === 'enabled' ? 'Pause' : 'Resume'}</button><button class="linkbtn" data-act="diagnose">Check for problems</button><button class="linkbtn danger" data-act="delete">Delete</button></div>
+      <div class="diag"></div></div>`).join('') : '<p class="hint">None yet.</p>'
+  document.querySelectorAll('#ad-list .addon').forEach((el) => {
+    el.querySelectorAll('[data-act]').forEach((b) => { b.onclick = async () => {
+      const id = el.dataset.id, act = b.dataset.act
+      try {
+        if (act === 'delete') { if (!confirm('Delete this add-on? The review agent is not affected.')) return; await post('/api/addons/' + id, undefined, 'DELETE'); toast('Deleted'); loadAddons() }
+        else if (act === 'diagnose') {
+          el.querySelector('.diag').innerHTML = '<p class="hint">Reading recent runs…</p>'
+          const d = await api('/api/addons/' + id + '/diagnose')
+          el.querySelector('.diag').innerHTML = (d.runs.length ? d.runs.map((r) => `<div class="run">${esc(new Date(r.at).toLocaleString())} · ${r.ok ? '<span class="badge b-green">worked</span>' : `<span class="badge b-red">failed</span> ${esc(r.message)} ${r.fix ? `<b>${esc(r.fix.label)}</b>` : ''}${r.cause === 'unknown' ? ' <i>' + esc(r.evidence || '') + '</i>' : ''}`}</div>`).join('') : '<p class="hint">No runs yet. It runs on its schedule or when a plug is rejected.</p>')
+        } else { await post('/api/addons/' + id + '/' + act); toast(act === 'pause' ? 'Paused' : 'Resumed'); loadAddons() }
+      } catch (e) { toast(e.message) }
+    } })
+  })
+}
+$('ad-pause-all').onclick = async () => { if (!confirm('Pause every add-on? The review agent keeps working.')) return; try { const r = await post('/api/addons/pause-all'); toast('Paused ' + r.paused); loadAddons() } catch (e) { toast(e.message) } }
+
 /* ---------- Boot ---------- */
 api('/api/viasocket/token').then((t) => { embedToken = t.token; renderApps() }).catch(() => renderApps())
-renderTestConnections(); loadSettings().then(applyHints); loadDecisions(); setInterval(loadDecisions, 30000)
+renderTestConnections(); loadGallery(); loadAddons(); loadSettings().then(applyHints); loadDecisions(); setInterval(loadDecisions, 30000)
 </script>
 <script id="viasocket-connect-script" src="https://flow.viasocket.com/connect.js"></script>
 </body>

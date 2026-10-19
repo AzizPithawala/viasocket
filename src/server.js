@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { embedToken, enableApp, findEnabledApp, listConnections, listOptions, runAction, connectionsOf, connectionLabel, revokeConnection, setFlowStatus, enabledAppsFor } from './viasocket.js'
 import { setupFlows, reviewUrl } from './flows.js'
 import { resolvePlug, runLiveTests } from './livetest.js'
+import { createAddonsRouter } from './addons/router.js'
 import { searchApps } from './viasocket.js'
 
 const REVIEWER_ID = process.env.REVIEWER_ID || 'plug-reviewer'
@@ -381,6 +382,9 @@ app.post('/api/live-test', (req, res) => {
     }
   })()
 })
+
+// Add-ons: built on top of the decisions data, in their own code and their own automations.
+app.use('/api/addons', createAddonsRouter({ loadState, loadSettings, dataDir: DATA_DIR, reviewerId: REVIEWER_ID }))
 
 recoverState().catch((error) => console.error('state recovery failed:', error.message))
 app.listen(port, '0.0.0.0', () => console.log(`listening on http://localhost:${port}`))
