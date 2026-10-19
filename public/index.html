@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plug Review Pipeline</title>
+<style>
+  body { font: 16px system-ui, sans-serif; max-width: 560px; margin: 48px auto; padding: 0 16px; }
+  .app { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #ddd; }
+  .app img { width: 28px; height: 28px; }
+  .app span { flex: 1; }
+  button { padding: 8px 14px; cursor: pointer; }
+  .ok { color: #1a7f37 } .bad { color: #b42318 }
+</style>
+</head>
+<body>
+<h1>Connect your apps</h1>
+<p>The review agent posts findings in Slack and records decisions in a viaSocket Table.</p>
+<div id="apps"></div>
+<p id="msg"></p>
+<h2>Review settings</h2>
+<p>Chosen once, from your own workspace.</p>
+<label>Findings channel <select id="channel"></select></label><br><br>
+<label>Team leader (gets reject messages) <select id="tl"></select></label><br><br>
+<label>Decisions table <select id="table"></select></label><br><br>
+<label>Review queue table <select id="queue"></select></label><br><br>
+<button id="save">Save and create automations</button>
+<p id="saved"></p>
+
+<script>
+const APPS = [
+  { id: 'rowbu58rc', name: 'Slack', icon: 'https://stuff.thingsofbrand.com/slack.com/images/img668216333e_slack.jpg',
+    actions: ['rowbevmtsy7h', 'rowovgwtt9u4', 'rowmo747gxss'] },
+  { id: 'rowe71n93', name: 'viaSocket Table', icon: 'https://stuff.thingsofbrand.com/viasocket.com/images/img6b109ca44d_viasocket_plug.jpg',
+    actions: ['rowsn9dar', 'rowrfcbb0mkf', 'rowdudm0qtf0', 'rowf0yq39'] }
+]
+let embedToken = null
+const msg = document.getElementById('msg')
+
+async function render() {
+  const status = await fetch('/api/viasocket/status').then((r) => r.json())
+  const root = document.getElementById('apps')
+  root.innerHTML = ''
+  for (const a of APPS) {
+    const s = status[a.id]
+    const row = document.createElement('div')
+    row.className = 'app'
+    row.innerHTML = `<img src="${a.icon}" alt=""><span>${a.name}</span>`
+    const state = document.createElement('em')
+    state.className = s && !s.expired ? 'ok' : 'bad'
+    state.textContent = !s ? 'not connected' : s.expired ? 'expired' : 'connected'
+    const btn = document.createElement('button')
+    btn.textContent = !s ? `Connect ${a.name}` : s.expired ? 'Reconnect' : 'Connected'
+    btn.disabled = Boolean(s && !s.expired)
+    btn.onclick = () =>
+      openViasocketConnection(embedToken, a.id, {
+        filteredActions: a.actions,
+        skipActionSelection: true,
+        ...(s && s.expired ? { authId: s.authId } : {})
+      })
+    row.append(state, btn)
+    root.append(row)
+  }
+}
+
+window.addEventListener('message', async (event) => {
+  if (event.data?.type === 'viasocket_connection_success') {
+    await fetch('/api/viasocket/connected', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serviceId: event.data.serviceId, authId: event.data.data.id })
+    })
+    msg.textContent = ''
+    render()
+  } else if (event.data?.type === 'viasocket_connection_error') {
+    msg.textContent = event.data.error?.message || 'Connection failed'
+  }
+})
+
+async function fill(id, kind, current) {
+  const sel = document.getElementById(id)
+  const opts = await fetch('/api/options/' + kind).then((r) => r.json())
+  sel.innerHTML = Array.isArray(opts) ? opts.map((o) => `<option value="${o.value}" ${o.value === current ? 'selected' : ''}>${o.label}</option>`).join('') : '<option>connect first</option>'
+}
+async function loadSettings() {
+  const cur = await fetch('/api/settings').then((r) => r.json())
+  await Promise.all([fill('channel', 'channels', cur.channelId), fill('tl', 'users', cur.tlUserId), fill('table', 'tables', cur.tableId), fill('queue', 'tables', cur.queueTableId)])
+  if (cur.reviewId) document.getElementById('saved').textContent = 'Automations ready (review ' + cur.reviewId + ', decision ' + cur.decideId + ')'
+}
+document.getElementById('save').onclick = async () => {
+  const saved = document.getElementById('saved')
+  saved.textContent = 'Saving...'
+  const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channelId: channel.value, tlUserId: tl.value, tableId: table.value, queueTableId: queue.value }) })
+  const j = await r.json()
+  saved.textContent = r.ok ? 'Automations ready: ' + (j.decideStepNames || []).join(', ') : 'Failed: ' + j.error
+}
+loadSettings()
+fetch('/api/viasocket/token').then((r) => r.json()).then((t) => { embedToken = t.token; render() })
+</script>
+<script id="viasocket-connect-script" src="https://flow.viasocket.com/connect.js"></script>
+</body>
+</html>

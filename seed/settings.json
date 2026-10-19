@@ -1,0 +1,14 @@
+{
+  "channelId": "C0C5LSUNPBK",
+  "tlUserId": "U0BKYAPMNTU",
+  "tableId": "tbloemkx7",
+  "queueTableId": "tbl7uvufk",
+  "reviewId": "scriC1Thkh7r",
+  "decideId": "scriT8bIK7zD",
+  "intakeId": "scri2eUuZfhC",
+  "decideStepNames": [
+    "recheck",
+    "ask",
+    "act"
+  ]
+}
