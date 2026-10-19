@@ -73,3 +73,30 @@ export async function runAction(scriptId, actionVersionId, inputData) {
   }
   return isEnvelope ? payload.data : payload
 }
+
+// Catalog: one app's actions and triggers with ids, input schemas and sample outputs.
+export async function getAppSchema(serviceId) {
+  const response = await fetch(`${RUN}/func/scriK4LFg2kc`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ service_id: serviceId })
+  })
+  const payload = await response.json()
+  const data = payload.data || payload
+  return data?.service ? data : null
+}
+
+export async function searchApps(name) {
+  const response = await fetch(`${RUN}/func/scri12BSufQM?key=${encodeURIComponent(name)}`)
+  const payload = await response.json()
+  return payload.data || []
+}
+
+// One real event of a trigger for a connection (the object a handler would read as context.req.body).
+export async function fetchTriggerSample(triggerId, authId, authType, inputData) {
+  const response = await fetch(
+    `${RUN}/func/scrijZpnr8zJ?action_id=${triggerId}&auth_id=${authId}&authType=${encodeURIComponent(authType)}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: { inputData } }) }
+  )
+  return response.json()
+}

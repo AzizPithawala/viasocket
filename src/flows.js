@@ -68,8 +68,8 @@ if (!hasDefinition) {
   audit = { recommendation: 'improve', summary: 'No plug definition was available to audit (only a Developer Hub link). Review the plug manually.', findings: [], unverified: ['plug definition not available: nothing was audited'] }
 } else {
   const result = await runAiModel({ inputData: {
-    query: 'Review this viaSocket plug against the official API docs at ' + body.docsUrl + '. Plug definition (JSON): ' + JSON.stringify(plug).slice(0, 12000),
-    prompt: 'You are a strict viaSocket plug reviewer. Read the API docs URL. Compare auth type, endpoints, required params, field design, naming and sample data of the plug against the docs and these criteria:\\n' + ${JSON.stringify(readFileSync('criteria.md', 'utf8'))} + '\\nOnly report what you can support from the docs or the plug definition. If something cannot be verified (for example live behavior), list it under unverified. Return ONLY JSON.',
+    query: 'Review this viaSocket plug against the official API docs at ' + body.docsUrl + '. Plug definition (JSON): ' + JSON.stringify(plug).slice(0, 9000) + '\\nLive test results from running the plug on a test account (JSON): ' + JSON.stringify(body.liveResults || { status: 'not_tested' }).slice(0, 5000),
+    prompt: 'You are a strict viaSocket plug reviewer. Read the API docs URL. Compare auth type, endpoints, required params, field design, naming and sample data of the plug against the docs and these criteria:\\n' + ${JSON.stringify(readFileSync('criteria.md', 'utf8'))} + '\\nLive test rules: an action or trigger with status failed is a blocking finding and its real error text is the evidence (quote it). Anything with status not_run, or live status not_tested, not_resolved or error, goes under unverified and is never a reason to reject. Write actions are never run; do not treat that as a defect. Only report what you can support from the docs, the plug definition or the live results. Return ONLY JSON.',
     threadid: 'plug-audit-' + body.plugId,
     reasoning: 'medium',
     response_type: 'json_object',
@@ -79,7 +79,7 @@ if (!hasDefinition) {
 }
 const handoff = await axios.post(${JSON.stringify(decideUrl)}, {
   plugId: body.plugId, plugName: body.plugName, assigneeSlackId: body.assigneeSlackId, assigneeName: body.assigneeName,
-  docsUrl: body.docsUrl, audit
+  docsUrl: body.docsUrl, audit, live: body.liveResults || null
 })
 return { audit, handoffStatus: handoff.status }
 `
@@ -105,12 +105,19 @@ return out
 const b = context?.req?.body || {}
 const re = context?.res?.recheck || {}
 const rec = b.audit?.recommendation
-if (rec === 'reject' && re.verdict === 'reject') {
-  console.log('### Audit and re-check both say reject: acting without a click')
+const blockingWithEvidence = (b.audit?.findings || []).filter((f) => f.severity === 'blocking' && f.evidence).length
+if (rec === 'reject' && re.verdict === 'reject' && blockingWithEvidence >= 1) {
+  console.log('### Audit and re-check both say reject with evidence: acting without a click')
   return { decision: 'reject', mode: 'auto' }
 }
 const lines = (b.audit?.findings || []).map((f) => '• [' + f.severity + '] #' + f.criterion + ' ' + f.detail)
-const content = '*Plug review: ' + b.plugName + '* (' + b.plugId + ')\\nAgent recommends: *' + rec + '* | Re-check says: *' + re.verdict + '*\\n' + (b.audit?.summary || '') + '\\n' + lines.join('\\n') + '\\n_Not verified: ' + ((b.audit?.unverified || []).join('; ') || 'nothing listed') + '_'
+const live = b.live || {}
+const liveItems = [].concat(live.actions || [], live.triggers || [])
+const liveFailed = liveItems.filter((i) => i.status === 'failed').map((i) => '• FAILED ' + i.name + ': ' + String(i.detail).slice(0, 160))
+const liveLine = live.status === 'tested'
+  ? '*Live test:* ' + live.summary.passed + ' passed, ' + live.summary.failed + ' failed, ' + live.summary.notRun + ' not run (writes are never run)'
+  : '*Live test:* not run (' + (live.reason || 'no live results') + ')'
+const content = '*Plug review: ' + b.plugName + '* (' + b.plugId + ')\\nAgent recommends: *' + rec + '* | Re-check says: *' + re.verdict + '*\\n' + (b.audit?.summary || '') + '\\n' + liveLine + '\\n' + liveFailed.join('\\n') + '\\n' + lines.join('\\n') + '\\n_Not verified: ' + ((b.audit?.unverified || []).join('; ') || 'nothing listed') + '_'
 await askReviewer({ inputData: {
   messageto: 'channel', channel_id: ${S(settings.channelId)}, content, operation: 'Approval',
   buttons: { Approve: 'approve', Reject: 'reject', Improve: 'improve' },
@@ -127,7 +134,9 @@ const d = ask.mode === 'auto' ? ask : { decision: ['approve', 'reject', 'improve
 const re = context?.res?.recheck || {}
 if (d.decision === 'unknown' || !d.decision) return { skipped: 'no valid decision' }
 const key = b.plugId + ':' + d.decision
-const reason = (b.audit?.findings || []).map((f) => '#' + f.criterion + ' ' + f.detail).join(' | ') || b.audit?.summary || ''
+const liveBits = [].concat(b.live?.actions || [], b.live?.triggers || []).filter((i) => i.status === 'failed').map((i) => 'LIVE FAIL ' + i.name + ': ' + String(i.detail).slice(0, 140))
+const liveHead = b.live?.status === 'tested' ? 'Live: ' + b.live.summary.passed + ' passed, ' + b.live.summary.failed + ' failed, ' + b.live.summary.notRun + ' not run' : 'Live: not run'
+const reason = [liveHead].concat(liveBits, (b.audit?.findings || []).map((f) => '#' + f.criterion + ' ' + f.detail)).join(' | ') || b.audit?.summary || ''
 
 // Idempotency: skip if this plug+decision was already recorded.
 const rows = await getRows({ inputData: { table: ${S(settings.tableId)}, filter_mode: 'list_all', queryopt: { limit: '500' } } })
@@ -186,12 +195,20 @@ const payload = {
   plug: { developerHubUrl: row.dh_pllug_url || null }
 }
 console.log('### Queued ' + payload.plugId + ' for review')
+// Live tests run on the hosted app (an automation stops at 58 s); it hands the results to the review flow.
 try {
-  const res = await axios.post(${JSON.stringify(reviewUrlValue)}, payload, { timeout: 45000 })
-  return { forwarded: true, status: res.status }
+  const res = await axios.post(${JSON.stringify(process.env.PUBLIC_URL + '/api/live-test')}, payload, { timeout: 20000, headers: { 'x-intake-key': ${JSON.stringify(process.env.INTAKE_KEY)} } })
+  return { forwarded: 'live-test', status: res.status }
 } catch (error) {
-  // The review automation keeps running on viaSocket even if this call times out.
-  return { forwarded: true, note: 'no reply within 45s or error: ' + (error?.message || error) }
+  // The app is unreachable: still start the review so a plug is never dropped, with live tests marked as not run.
+  console.log('### Live-test service unavailable (' + (error?.message || error) + '): reviewing without live tests')
+  payload.liveResults = { status: 'error', reason: 'Live-test service unavailable: ' + (error?.message || error) }
+  try {
+    const res = await axios.post(${JSON.stringify(reviewUrlValue)}, payload, { timeout: 45000 })
+    return { forwarded: 'review-direct', status: res.status }
+  } catch (e) {
+    return { forwarded: 'review-direct', note: 'no reply within 45s or error: ' + (e?.message || e) }
+  }
 }
 `
   return [{ stepname: 'forward', code, service_action_functions: [] }]

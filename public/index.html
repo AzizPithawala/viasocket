@@ -186,6 +186,14 @@
       </section>
 
       <section class="card">
+        <h3>Test connections</h3>
+        <p class="sub">Connect a test account for an app so the agent can run its plug live. Read actions only; writes are never run.</p>
+        <div class="field"><label for="app-q">Find an app</label><input id="app-q" placeholder="e.g. Tally, HubSpot" autocomplete="off"></div>
+        <div id="app-results"></div>
+        <div id="test-conns"></div>
+      </section>
+
+      <section class="card">
         <h3>Review settings</h3>
         <p class="sub">Chosen once, from your own workspace.</p>
         <div class="field"><label for="channel">Findings channel</label><select id="channel"></select></div>
@@ -242,7 +250,7 @@ window.addEventListener('message', async (event) => {
     try {
       await api('/api/viasocket/connected', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ serviceId: event.data.serviceId, authId: event.data.data.id }) })
-      $('msg').textContent = ''; toast('Connected'); renderApps(); loadSettings()
+      $('msg').textContent = ''; toast('Connected'); renderApps(); renderTestConnections(); loadSettings()
     } catch (e) { $('msg').textContent = e.message }
   } else if (event.data?.type === 'viasocket_connection_error') {
     $('msg').textContent = event.data.error?.message || 'Connection failed'
@@ -327,9 +335,27 @@ async function loadDecisions() {
   })
 }
 
+/* ---------- Test connections ---------- */
+async function renderTestConnections() {
+  const list = await api('/api/test-connections').catch(() => [])
+  $('test-conns').innerHTML = list.length ? list.map((c) => `<div class="app"><img src="${esc(c.icon)}" alt=""><div class="name">${esc(c.name)}<small>Test account</small></div>${c.expired ? '<span class="badge b-amber">Expired</span>' : '<span class="badge b-green">Connected</span>'}${c.expired ? `<button data-reconnect="${esc(c.serviceId)}" data-auth="${esc(c.authId)}">Reconnect</button>` : ''}</div>`).join('') : '<p class="hint">No test connections yet.</p>'
+  document.querySelectorAll('[data-reconnect]').forEach((b) => { b.onclick = () => openViasocketConnection(embedToken, b.dataset.reconnect, { authId: b.dataset.auth }) })
+}
+let searchTimer
+$('app-q').oninput = () => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(async () => {
+    const q = $('app-q').value.trim()
+    if (q.length < 2) { $('app-results').innerHTML = ''; return }
+    const found = await api('/api/apps/search?q=' + encodeURIComponent(q)).catch(() => [])
+    $('app-results').innerHTML = found.length ? found.map((a) => `<div class="app"><img src="${esc(a.icon)}" alt=""><div class="name">${esc(a.name)}</div><button data-connect="${esc(a.id)}">Connect</button></div>`).join('') : '<p class="hint">No published app matches.</p>'
+    document.querySelectorAll('[data-connect]').forEach((b) => { b.onclick = () => openViasocketConnection(embedToken, b.dataset.connect, {}) })
+  }, 300)
+}
+
 /* ---------- Boot ---------- */
 api('/api/viasocket/token').then((t) => { embedToken = t.token; renderApps() }).catch(() => renderApps())
-loadSettings(); loadDecisions(); setInterval(loadDecisions, 30000)
+renderTestConnections(); loadSettings(); loadDecisions(); setInterval(loadDecisions, 30000)
 </script>
 <script id="viasocket-connect-script" src="https://flow.viasocket.com/connect.js"></script>
 </body>

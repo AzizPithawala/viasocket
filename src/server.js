@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { timingSafeEqual } from 'node:crypto'
 import { embedToken, enableApp, findEnabledApp, listConnections, listOptions, runAction } from './viasocket.js'
 import { setupFlows, reviewUrl } from './flows.js'
+import { resolvePlug, runLiveTests } from './livetest.js'
+import { searchApps } from './viasocket.js'
 
 const REVIEWER_ID = process.env.REVIEWER_ID || 'plug-reviewer'
 const DATA_DIR = process.env.DATA_DIR || 'data'
@@ -35,6 +37,12 @@ const app = express()
 const PASSWORD = process.env.APP_PASSWORD
 app.use((req, res, next) => {
   if (!PASSWORD) return res.status(503).send('APP_PASSWORD is not set')
+  // The intake automation calls one endpoint with its own key, so the main password never leaves this app.
+  const key = process.env.INTAKE_KEY
+  if (key && req.path === '/api/live-test' && req.method === 'POST') {
+    const sent = Buffer.from(String(req.headers['x-intake-key'] || ''))
+    if (sent.length === Buffer.from(key).length && timingSafeEqual(sent, Buffer.from(key))) return next()
+  }
   const given = Buffer.from((req.headers.authorization || '').split(' ')[1] || '', 'base64').toString().split(':').slice(1).join(':')
   const a = Buffer.from(given), b = Buffer.from(PASSWORD)
   if (a.length === b.length && timingSafeEqual(a, b)) return next()
@@ -52,7 +60,9 @@ app.get('/api/viasocket/token', (req, res) => {
 app.post('/api/viasocket/connected', async (req, res) => {
   try {
     const { serviceId, authId } = req.body
-    if (!APPS[serviceId] || !authId) return res.status(400).json({ error: 'unknown app or missing authId' })
+    if (!serviceId || !authId) return res.status(400).json({ error: 'missing serviceId or authId' })
+    // Test connections for other apps stay on viaSocket; live tests read them from there and enable lazily.
+    if (!APPS[serviceId]) return res.json({ ok: true, testConnection: true })
 
     let scriptId = await findEnabledApp(REVIEWER_ID, serviceId)
     if (!scriptId) scriptId = await enableApp(REVIEWER_ID, authId, serviceId)
@@ -193,5 +203,67 @@ app.post('/api/queue', async (req, res) => {
 })
 
 const port = process.env.PORT || 3000
+// Test connections: apps a reviewer connects with a test account so plugs under review can be run live.
+app.get('/api/apps/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim()
+    if (q.length < 2) return res.json([])
+    const found = await searchApps(q)
+    res.json(found.slice(0, 8).map((a) => ({ id: a.service_id, name: a.name, icon: a.iconurl })))
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+app.get('/api/test-connections', async (req, res) => {
+  try {
+    const connections = await listConnections(REVIEWER_ID)
+    res.json(
+      connections
+        .filter((c) => !APPS[c.service_id])
+        .map((c) => ({ authId: c.id, serviceId: c.service_id, name: c.service_name, icon: c.iconUrl, expired: Boolean(c.isExpired) }))
+    )
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Compact, readable plug definition from the catalog, so the audit sees real actions and fields.
+function definitionFrom(schema) {
+  const fields = (s) => Object.values(s?.blocks || {}).filter((f) => f.type !== 'help').map((f) => ({ key: f.key, label: f.label, type: f.type, required: Boolean(f.required), help: f.help }))
+  return {
+    auth: { type: schema.service.auth_type || 'unknown' },
+    actions: (schema.actions || []).map((a) => ({ name: a.name, description: a.description, inputs: fields(a.input_schema), sampledata: a.sample_output })),
+    triggers: (schema.triggers || []).map((t) => ({ name: t.name, description: t.description, inputs: fields(t.input_schema), sampledata: t.sample_output }))
+  }
+}
+
+// Live tests run here (not in an automation, which stops at 58 s). Answer at once, then hand off to review.
+app.post('/api/live-test', (req, res) => {
+  const row = req.body || {}
+  if (!row.plugId) return res.status(400).json({ error: 'plugId is required' })
+  res.status(202).json({ accepted: true })
+  ;(async () => {
+    const settings = loadSettings()
+    const payload = { ...row }
+    try {
+      const plug = await resolvePlug({ plugName: row.plugName, dhUrl: row.plug?.developerHubUrl })
+      if (plug.unresolved) {
+        payload.liveResults = { status: 'not_resolved', reason: 'Could not match this plug to a published app. Candidates: ' + plug.candidates.map((c) => c.name).join(', ') }
+      } else {
+        payload.plug = { ...row.plug, ...definitionFrom(plug.schema) }
+        payload.liveResults = await runLiveTests(plug)
+      }
+    } catch (error) {
+      payload.liveResults = { status: 'error', reason: error.message }
+    }
+    try {
+      await fetch(reviewUrl(settings.reviewId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    } catch (error) {
+      console.error('hand-off to review failed:', error.message)
+    }
+  })()
+})
+
 recoverState().catch((error) => console.error('state recovery failed:', error.message))
 app.listen(port, '0.0.0.0', () => console.log(`listening on http://localhost:${port}`))
