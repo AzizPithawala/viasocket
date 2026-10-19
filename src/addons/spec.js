@@ -26,31 +26,32 @@ export const SPEC_SCHEMA = {
       output_app: { type: 'string', description: 'Name of the app the user wants the result in, such as Slack or Gmail' },
       writes_to_other_app: { type: 'boolean', description: 'True if the user wants records created or changed in another app' },
       missing: { type: 'array', items: { type: 'string' }, description: 'What the request needs that the agent has no way to provide' },
+      deviations: { type: 'array', items: { type: 'string' }, description: 'Every part of the request the chosen kind cannot do exactly as asked (for example: only counting rejected plugs, weekdays only, "yesterday" instead of a rolling window). Empty only if the kind does exactly what was asked' },
       questions: { type: 'array', items: { type: 'string' }, description: 'Things you could not tell from the request' }
     },
-    required: ['summary', 'kind', 'output_app', 'writes_to_other_app', 'missing', 'questions']
+    required: ['summary', 'kind', 'output_app', 'writes_to_other_app', 'missing', 'deviations', 'questions']
   }
 }
 
 export const GALLERY = [
   {
     id: 'digest', title: 'Decision digest', description: 'Weekly count of approved, rejected and improved plugs, posted to Slack.',
-    spec: { summary: 'Post a weekly count of approved, rejected and improved plugs to Slack.', kind: 'digest', schedule: { frequency: 'weekly', weekday: 'Monday', hour: 9 }, period_days: 7, output_app: 'Slack', writes_to_other_app: false, missing: [], questions: [] }
+    spec: { summary: 'Post a weekly count of approved, rejected and improved plugs to Slack.', kind: 'digest', schedule: { frequency: 'weekly', weekday: 'Monday', hour: 9 }, period_days: 7, output_app: 'Slack', writes_to_other_app: false, missing: [], deviations: [], questions: [] }
   },
   {
     id: 'reject_alert', title: 'Reject alert', description: 'A Slack message every time a plug is rejected, with the reason.',
-    spec: { summary: 'Post a Slack message whenever a plug is rejected.', kind: 'event_alert', output_app: 'Slack', writes_to_other_app: false, missing: [], questions: [] }
+    spec: { summary: 'Post a Slack message whenever a plug is rejected.', kind: 'event_alert', output_app: 'Slack', writes_to_other_app: false, missing: [], deviations: [], questions: [] }
   },
   {
     id: 'developer_summary', title: 'Developer summary', description: 'Weekly: open improvements and rejections per developer.',
-    spec: { summary: 'Post a weekly per-developer summary of open improvements and rejections to Slack.', kind: 'developer_summary', schedule: { frequency: 'weekly', weekday: 'Monday', hour: 9 }, output_app: 'Slack', writes_to_other_app: false, missing: [], questions: [] }
+    spec: { summary: 'Post a weekly per-developer summary of open improvements and rejections to Slack.', kind: 'developer_summary', schedule: { frequency: 'weekly', weekday: 'Monday', hour: 9 }, output_app: 'Slack', writes_to_other_app: false, missing: [], deviations: [], questions: [] }
   }
 ]
 
 /** Check a spec returned by the model and fill sensible defaults. Returns { spec, problems }. */
 export function normalizeSpec(raw) {
   const problems = []
-  const spec = { summary: String(raw?.summary || '').slice(0, 300), kind: raw?.kind, output_app: String(raw?.output_app || 'Slack').slice(0, 60), writes_to_other_app: Boolean(raw?.writes_to_other_app), missing: Array.isArray(raw?.missing) ? raw.missing.map(String).slice(0, 8) : [], questions: Array.isArray(raw?.questions) ? raw.questions.map(String).slice(0, 6) : [] }
+  const spec = { summary: String(raw?.summary || '').slice(0, 300), kind: raw?.kind, output_app: String(raw?.output_app || 'Slack').slice(0, 60), writes_to_other_app: Boolean(raw?.writes_to_other_app), missing: Array.isArray(raw?.missing) ? raw.missing.map(String).slice(0, 8) : [], deviations: Array.isArray(raw?.deviations) ? raw.deviations.map(String).slice(0, 6) : [], questions: Array.isArray(raw?.questions) ? raw.questions.map(String).slice(0, 6) : [] }
   if (!Object.keys(KINDS).includes(spec.kind) && spec.kind !== 'unsupported') { problems.push('unknown kind'); spec.kind = 'unsupported' }
   if (spec.kind === 'digest' || spec.kind === 'developer_summary') {
     const s = raw?.schedule || {}

@@ -7,7 +7,7 @@ The agent reviews viaSocket plugs and records every decision in a table with the
 An add-on can only READ that table and send a result somewhere. These are the only kinds you may choose:
 ${Object.entries(KINDS).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
 - unsupported: anything else (list what is missing in "missing").
-Rules: never invent data the table does not have. If the user wants records created or changed in another app, set writes_to_other_app true. Put anything you could not tell in "questions". Name the app the user wants the result in (default Slack). Return only JSON.`
+Rules: be strict about "deviations": each kind does only what its description says, so list anything the user asked for beyond that (a status filter, weekdays only, a calendar boundary, a different recipient) instead of pretending the kind covers it. Never invent data the table does not have. If the user wants records created or changed in another app, set writes_to_other_app true. Put anything you could not tell in "questions". Name the app the user wants the result in (default Slack). Return only JSON.`
 
 /** Ask the AI for a spec. json_schema first, json_object as the fallback; the result is validated in code. */
 async function askForSpec(text) {
@@ -66,10 +66,13 @@ export async function assess(spec, ctx) {
     if (connections.find((c) => c.id === ctx.state.rowbu58rc?.authId && !c.isExpired)) needs.push({ key: 'channelId', label: 'Slack channel for the message', type: 'channel' })
   }
 
+  // "Can build" only when the kind does what was asked. Any difference makes it a partial match, stated plainly.
+  const deviations = spec.deviations || []
+  if (deviations.length) notes.push('Not exactly as you asked: ' + deviations.join('; ') + '.')
   const buildable = supported && !spec.writes_to_other_app && ctx.settings.tableId
   const slackReady = apps.some((a) => a.name === 'Slack' && a.status === 'connected') || (!wantsSlack && needs.length)
   let verdict = 'cannot'
-  if (buildable && slackReady) verdict = wantsSlack ? 'can_build' : 'partial'
+  if (buildable && slackReady) verdict = wantsSlack && !deviations.length ? 'can_build' : 'partial'
   else if (supported && !spec.writes_to_other_app) verdict = 'cannot'
   if (!supported) notes.push('Closest ready-made add-ons: ' + GALLERY.map((g) => g.title).join(', ') + '.')
 
