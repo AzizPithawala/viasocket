@@ -1,7 +1,7 @@
 import express from 'express'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { timingSafeEqual } from 'node:crypto'
-import { embedToken, enableApp, findEnabledApp, listConnections, listOptions } from './viasocket.js'
+import { embedToken, enableApp, findEnabledApp, listConnections, listOptions, runAction } from './viasocket.js'
 import { setupFlows, reviewUrl } from './flows.js'
 
 const REVIEWER_ID = process.env.REVIEWER_ID || 'plug-reviewer'
@@ -143,6 +143,50 @@ app.post('/api/reviews', async (req, res) => {
       results.push({ plugId: plug.plugId, status: response.status, body })
     }
     res.json(results)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Recent decisions for the dashboard, newest first. Blank starter rows have no plug id and are dropped.
+app.get('/api/decisions', async (req, res) => {
+  try {
+    const { tableId } = loadSettings()
+    const scriptId = loadState().rowe71n93?.scriptId
+    if (!tableId || !scriptId) return res.json([])
+    const rows = await runAction(scriptId, 'rowhk32rn3e0', { table: tableId, filter_mode: 'list_all', queryopt: { limit: '500' } })
+    const list = Array.isArray(rows) ? rows : rows.data || rows.rows || []
+    const decisions = list
+      .filter((r) => r.name)
+      .map((r) => ({
+        plugId: r.name, plugName: r.plug_name, status: r.status, recommendation: r.recommendation,
+        reason: r.reason, assignee: r.assignee, decidedBy: r.decided_by, decidedAt: r.decided_at
+      }))
+      .sort((a, b) => String(b.decidedAt).localeCompare(String(a.decidedAt)))
+      .slice(0, 50)
+    res.json(decisions)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Add a plug to the review queue; the intake automation picks the row up.
+app.post('/api/queue', async (req, res) => {
+  try {
+    const { queueTableId } = loadSettings()
+    const scriptId = loadState().rowe71n93?.scriptId
+    const { plugId, plugName, docsUrl, assigneeName, assigneeSlackId } = req.body
+    if (!queueTableId || !scriptId) return res.status(400).json({ error: 'save settings with a queue table first' })
+    if (!plugId || !docsUrl) return res.status(400).json({ error: 'plug id and docs URL are required' })
+    const field = {
+      'name@longtext': plugId, 'plug_name@longtext': plugName || plugId, 'docs_url@longtext': docsUrl,
+      'assignee_name@longtext': assigneeName || '', 'assignee_slack@longtext': assigneeSlackId || ''
+    }
+    await runAction(scriptId, 'rowv9c7j4j40', {
+      table: queueTableId, bulkAdd: false, includeLookupFields: false, addMissingOptions: false,
+      selectedFields: Object.keys(field), field
+    })
+    res.json({ ok: true })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
