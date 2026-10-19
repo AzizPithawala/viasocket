@@ -37,14 +37,15 @@ export async function enableApp(uniqueIdentifier, authId, serviceId) {
   return data.script_id
 }
 
-export async function findEnabledApp(uniqueIdentifier, serviceId) {
+export async function findEnabledApp(uniqueIdentifier, serviceId, authId) {
   const response = await fetch(
     `${API}/projects/${process.env.VIASOCKET_PROJECT_ID}/integrations`,
     { headers: { authorization: embedToken(uniqueIdentifier) } }
   )
   const payload = await response.json()
   const flows = payload.data?.flows || []
-  return flows.find((flow) => flow.service_id === serviceId && flow.status === 'active')?.id || null
+  // An enabled app belongs to one connection: with an authId, only that connection's app counts.
+  return flows.find((flow) => flow.service_id === serviceId && flow.status === 'active' && (!authId || flow.auth_id === authId))?.id || null
 }
 
 export async function listOptions(uniqueIdentifier, actionVersionId, fieldKey, existingFields, authId) {
@@ -99,4 +100,21 @@ export async function fetchTriggerSample(triggerId, authId, authType, inputData)
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: { inputData } }) }
   )
   return response.json()
+}
+
+/** Readable account name from a connection's label, e.g. {"team":"Viasocket"} -> "Viasocket". */
+export function connectionLabel(connection) {
+  try {
+    const parsed = JSON.parse(connection.connection_label)
+    return Object.values(parsed)[0] ? String(Object.values(parsed)[0]) : connection.service_name
+  } catch {
+    return connection.connection_label || connection.service_name
+  }
+}
+
+/** All connections of one app, newest first, usable ones before expired ones. */
+export function connectionsOf(connections, serviceId) {
+  return connections
+    .filter((c) => String(c.id).endsWith(`_${serviceId}`))
+    .sort((a, b) => Number(Boolean(a.isExpired)) - Number(Boolean(b.isExpired)) || String(b.updated_at).localeCompare(String(a.updated_at)))
 }

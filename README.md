@@ -9,6 +9,10 @@ An agent that reviews viaSocket plugs, asks the reviewer in Slack, and records e
 - Approve and Improve wait for a click. They record a status but do **not** call Developer Hub yet (not connected).
 - With no plug definition, nothing is audited or auto-rejected: the reviewer decides.
 
+## Choosing accounts
+
+Slack and viaSocket Table each have a dropdown listing every connected account (for example the Slack workspace or the Table database). Pick one to make it active, or choose "Connect another account…". Old connections are kept. Switching clears the saved channel, team leader and table picks, because they belong to the old account; pick them again and save so the automations use the new account. Saving checks that the chosen tables have the required columns. To use a different viaSocket account, sign in to it in a private window first.
+
 ## Run locally
 
 ```bash

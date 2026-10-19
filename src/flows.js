@@ -234,11 +234,12 @@ export async function setupFlows(uniqueIdentifier, settings, state, existing = {
   let intakeId = existing.intakeId
   if (settings.queueTableId) {
     if (!intakeId) intakeId = (await post('scrisgf5H0hN', { title: 'Plug intake', description: 'A new row in the plug queue table starts a plug review.', projectId: PROJECT, proxy_auth_token: token })).data.script_id
-    if (!existing.intakeId || existing.queueTableId !== settings.queueTableId) await setIntakeTrigger(token, intakeId, tableAuth, settings.queueTableId)
+    // The trigger is bound to a Table connection and table: re-set it when either changed.
+    if (!existing.intakeId || existing.queueTableId !== settings.queueTableId || existing.tableAuthId !== tableAuth) await setIntakeTrigger(token, intakeId, tableAuth, settings.queueTableId)
     await saveSteps(token, intakeId, intakeSteps(`${RUN}/${reviewId}`))
   }
   const readBack = await readFlow(token, decideId)
-  return { reviewId, decideId, intakeId, decideStepNames: (readBack.steps || readBack.data?.steps || []).map((s) => s.stepname) }
+  return { slackAuthId: slackAuth, tableAuthId: tableAuth, reviewId, decideId, intakeId, decideStepNames: (readBack.steps || readBack.data?.steps || []).map((s) => s.stepname) }
 }
 
 export const reviewUrl = (reviewId) => `${RUN}/${reviewId}`

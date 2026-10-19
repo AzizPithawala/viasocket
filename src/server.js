@@ -1,7 +1,7 @@
 import express from 'express'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { timingSafeEqual } from 'node:crypto'
-import { embedToken, enableApp, findEnabledApp, listConnections, listOptions, runAction } from './viasocket.js'
+import { embedToken, enableApp, findEnabledApp, listConnections, listOptions, runAction, connectionsOf, connectionLabel } from './viasocket.js'
 import { setupFlows, reviewUrl } from './flows.js'
 import { resolvePlug, runLiveTests } from './livetest.js'
 import { searchApps } from './viasocket.js'
@@ -22,10 +22,12 @@ async function recoverState() {
   const state = loadState()
   const connections = await listConnections(REVIEWER_ID)
   for (const serviceId of Object.keys(APPS)) {
-    const match = connections.find((c) => String(c.id).endsWith(`_${serviceId}`))
-    if (!match || state[serviceId]?.authId === match.id) continue
-    const scriptId = (await findEnabledApp(REVIEWER_ID, serviceId)) || (await enableApp(REVIEWER_ID, match.id, serviceId))
-    state[serviceId] = { authId: match.id, scriptId }
+    const mine = connectionsOf(connections, serviceId)
+    // The stored active connection wins while it still exists; otherwise take the newest usable one.
+    const chosen = mine.find((c) => c.id === state[serviceId]?.authId) || mine[0]
+    if (!chosen || (state[serviceId]?.authId === chosen.id && state[serviceId]?.scriptId)) continue
+    const scriptId = (await findEnabledApp(REVIEWER_ID, serviceId, chosen.id)) || (await enableApp(REVIEWER_ID, chosen.id, serviceId))
+    state[serviceId] = { authId: chosen.id, scriptId }
   }
   saveState(state)
 }
@@ -56,34 +58,70 @@ app.get('/api/viasocket/token', (req, res) => {
   res.json({ token: embedToken(REVIEWER_ID) })
 })
 
-// Called by the browser after a connection succeeds: enable the app, keep script_id server-side.
+// Which saved picks belong to which app's account. They mean nothing in another account.
+const STALE_PICKS = { rowbu58rc: ['channelId', 'tlUserId'], rowe71n93: ['tableId', 'queueTableId'] }
+
+/** Make a connection the active one for its app: its own enabled app, and forget picks from the old account. */
+async function activateConnection(serviceId, authId) {
+  const connections = await listConnections(REVIEWER_ID)
+  const connection = connections.find((c) => c.id === authId && String(c.id).endsWith(`_${serviceId}`))
+  if (!connection) throw new Error('that connection does not exist for this app')
+  if (connection.isExpired) throw new Error('that connection has expired: reconnect it first')
+
+  const scriptId = (await findEnabledApp(REVIEWER_ID, serviceId, authId)) || (await enableApp(REVIEWER_ID, authId, serviceId))
+  const state = loadState()
+  const changed = state[serviceId]?.authId !== authId
+  state[serviceId] = { authId, scriptId }
+  saveState(state)
+
+  if (changed) {
+    // null, not delete: the seed merge on start only re-adds keys that are missing.
+    const settings = loadSettings()
+    for (const key of STALE_PICKS[serviceId] || []) settings[key] = null
+    writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2))
+  }
+  return { changed, label: connectionLabel(connection) }
+}
+
+// Called by the browser after a connection succeeds: make it the active one for that app.
 app.post('/api/viasocket/connected', async (req, res) => {
   try {
     const { serviceId, authId } = req.body
     if (!serviceId || !authId) return res.status(400).json({ error: 'missing serviceId or authId' })
     // Test connections for other apps stay on viaSocket; live tests read them from there and enable lazily.
     if (!APPS[serviceId]) return res.json({ ok: true, testConnection: true })
-
-    let scriptId = await findEnabledApp(REVIEWER_ID, serviceId)
-    if (!scriptId) scriptId = await enableApp(REVIEWER_ID, authId, serviceId)
-
-    const state = loadState()
-    state[serviceId] = { authId, scriptId }
-    saveState(state)
-    res.json({ ok: true })
+    const { changed } = await activateConnection(serviceId, authId)
+    res.json({ ok: true, needsSetup: changed })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
 })
 
-// Connection status for the page: which apps are connected and whether any expired.
+// Choose which of the app's connections is active.
+app.post('/api/viasocket/activate', async (req, res) => {
+  try {
+    const { serviceId, authId } = req.body
+    if (!APPS[serviceId] || !authId) return res.status(400).json({ error: 'unknown app or missing authId' })
+    const { changed, label } = await activateConnection(serviceId, authId)
+    res.json({ ok: true, needsSetup: changed, label })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Every app's connections for the dropdowns, with the active one marked.
 app.get('/api/viasocket/status', async (req, res) => {
   try {
     const connections = await listConnections(REVIEWER_ID)
+    const state = loadState()
     const status = Object.fromEntries(
       Object.keys(APPS).map((serviceId) => {
-        const match = connections.find((c) => String(c.id).endsWith(`_${serviceId}`))
-        return [serviceId, match ? { authId: match.id, expired: Boolean(match.isExpired) } : null]
+        const mine = connectionsOf(connections, serviceId)
+        const active = mine.find((c) => c.id === state[serviceId]?.authId) || null
+        return [serviceId, {
+          active: active?.id || null,
+          connections: mine.map((c) => ({ authId: c.id, label: connectionLabel(c), expired: Boolean(c.isExpired) }))
+        }]
       })
     )
     res.json(status)
@@ -91,7 +129,6 @@ app.get('/api/viasocket/status', async (req, res) => {
     res.status(500).json({ error: error.message })
   }
 })
-
 
 const SETTINGS_FILE = `${DATA_DIR}/settings.json`
 // First start on a fresh DATA_DIR: seed the flow ids so setup updates the existing automations.
@@ -124,12 +161,31 @@ app.get('/api/options/:kind', async (req, res) => {
 app.get('/api/settings', (req, res) => res.json(loadSettings()))
 
 // Saving settings (re)creates the two automations with those values baked into their steps.
+// Columns each table must have (keys as Add Records lists them). A new account starts with no tables.
+const DECISION_COLUMNS = ['name', 'plug_name', 'status', 'recommendation', 'reason', 'assignee', 'decided_by', 'decided_at', 'idempotency_key']
+const QUEUE_COLUMNS = ['name', 'plug_name', 'docs_url', 'assignee_name', 'assignee_slack']
+
+async function missingColumns(tableId, required, tableAuthId) {
+  const fields = await listOptions(REVIEWER_ID, 'rowv9c7j4j40', 'selectedFields', { table: tableId, includeLookupFields: false }, tableAuthId)
+  const have = new Set(fields.map((f) => String(f.value).split('@')[0]))
+  return required.filter((column) => !have.has(column))
+}
+
+// Saving settings (re)creates the automations with the active connections and these picks baked into their steps.
 app.post('/api/settings', async (req, res) => {
   try {
     const { channelId, tlUserId, tableId, queueTableId } = req.body
-    if (!channelId || !tlUserId || !tableId) return res.status(400).json({ error: 'channelId, tlUserId and tableId are required' })
+    if (!channelId || !tlUserId || !tableId || !queueTableId) return res.status(400).json({ error: 'channel, team leader, decisions table and queue table are all required' })
     const state = loadState()
     if (!state.rowbu58rc || !state.rowe71n93) return res.status(400).json({ error: 'connect Slack and viaSocket Table first' })
+
+    const problems = []
+    const decisionsMissing = await missingColumns(tableId, DECISION_COLUMNS, state.rowe71n93.authId)
+    if (decisionsMissing.length) problems.push(`The decisions table is missing columns: ${decisionsMissing.join(', ')}.`)
+    const queueMissing = await missingColumns(queueTableId, QUEUE_COLUMNS, state.rowe71n93.authId)
+    if (queueMissing.length) problems.push(`The queue table is missing columns: ${queueMissing.join(', ')}.`)
+    if (problems.length) return res.status(400).json({ error: problems.join(' ') + ' Add them as text columns in this account, then save again.' })
+
     const flows = await setupFlows(REVIEWER_ID, { channelId, tlUserId, tableId, queueTableId }, state, loadSettings())
     writeFileSync(SETTINGS_FILE, JSON.stringify({ channelId, tlUserId, tableId, queueTableId, ...flows }, null, 2))
     res.json({ ok: true, ...flows })

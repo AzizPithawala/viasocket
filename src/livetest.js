@@ -1,4 +1,4 @@
-import { listConnections, findEnabledApp, enableApp, listOptions, runAction, getAppSchema, searchApps, fetchTriggerSample } from './viasocket.js'
+import { listConnections, connectionsOf, findEnabledApp, enableApp, listOptions, runAction, getAppSchema, searchApps, fetchTriggerSample } from './viasocket.js'
 
 const REVIEWER_ID = process.env.REVIEWER_ID || 'plug-reviewer'
 const READ_NAME = /^(get|list|find|search|lookup|fetch|retrieve|read|view|check)\b/i
@@ -72,14 +72,14 @@ async function fillInputs(schema, versionId, authId) {
 export async function runLiveTests({ serviceId, schema }) {
   const result = { serviceId, name: schema.service.name, status: 'tested', actions: [], triggers: [], summary: { passed: 0, failed: 0, notRun: 0 } }
   const connections = await listConnections(REVIEWER_ID)
-  const connection = connections.find((c) => String(c.id).endsWith(`_${serviceId}`))
+  const connection = connectionsOf(connections, serviceId)[0] // newest usable test connection
   const noAuth = String(schema.service.auth_type || '').toLowerCase().includes('no')
   if (!connection && !noAuth) {
     return { ...result, status: 'not_tested', reason: 'No test connection for this app. Connect a test account on the dashboard.' }
   }
   if (connection?.isExpired) return { ...result, status: 'not_tested', reason: 'The test connection has expired. Reconnect it on the dashboard.' }
   const authId = connection?.id || 'NoAuth'
-  const scriptId = (await findEnabledApp(REVIEWER_ID, serviceId)) || (await enableApp(REVIEWER_ID, authId, serviceId))
+  const scriptId = (await findEnabledApp(REVIEWER_ID, serviceId, authId)) || (await enableApp(REVIEWER_ID, authId, serviceId))
   const tally = (status) => { result.summary[status === 'passed' ? 'passed' : status === 'failed' ? 'failed' : 'notRun']++ }
 
   for (const action of schema.actions || []) {

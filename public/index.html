@@ -84,6 +84,12 @@
   .app .name { font-weight: 600; flex: 1; }
   .app .name small { display: block; font-weight: 400; color: var(--muted); font-size: 12.5px; }
 
+  .app.conn { display: grid; grid-template-columns: 30px 1fr auto; gap: 4px 12px; align-items: center; }
+  .app.conn .pick { grid-column: 2 / -1; }
+  .app.conn select { margin-top: 2px; }
+  .banner { background: var(--amber-bg); color: var(--amber); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; font-weight: 600; margin: 0 0 14px; display: none; }
+  .banner.show { display: block; }
+  .card.highlight { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
   .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
   .b-green { color: var(--green); background: var(--green-bg); } .b-red { color: var(--red); background: var(--red-bg); }
   .b-amber { color: var(--amber); background: var(--amber-bg); } .b-gray { color: var(--muted); background: var(--gray-bg); }
@@ -181,8 +187,10 @@
       <section class="card">
         <h3>Connections</h3>
         <p class="sub">The agent uses these on your behalf.</p>
+        <div id="switch-banner" class="banner" role="status"></div>
         <div id="apps"></div>
         <p id="msg" class="hint"></p>
+        <p class="hint">Pick which account each app uses, or connect another one. Old connections are kept. To use a different viaSocket account, sign in to it in a private window first.</p>
       </section>
 
       <section class="card">
@@ -193,7 +201,7 @@
         <div id="test-conns"></div>
       </section>
 
-      <section class="card">
+      <section class="card" id="settings-card">
         <h3>Review settings</h3>
         <p class="sub">Chosen once, from your own workspace.</p>
         <div class="field"><label for="channel">Findings channel</label><select id="channel"></select></div>
@@ -227,19 +235,38 @@ const APPS = [
 ]
 let embedToken = null
 
+function showSwitchBanner(text) {
+  const banner = $('switch-banner'); banner.textContent = text; banner.classList.add('show')
+  const card = $('settings-card'); card.classList.add('highlight'); card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 async function renderApps() {
   const status = await api('/api/viasocket/status').catch(() => ({}))
   $('apps').innerHTML = ''
   for (const a of APPS) {
-    const s = status[a.id]
-    const row = document.createElement('div'); row.className = 'app'
-    const badge = !s ? '<span class="badge b-gray">Not connected</span>' : s.expired ? '<span class="badge b-amber">Expired</span>' : '<span class="badge b-green">Connected</span>'
-    row.innerHTML = `<img src="${esc(a.icon)}" alt=""><div class="name">${esc(a.name)}<small>${esc(a.sub)}</small></div>${badge}`
-    if (!s || s.expired) {
-      const btn = document.createElement('button')
-      btn.textContent = s ? 'Reconnect' : 'Connect'
-      btn.onclick = () => openViasocketConnection(embedToken, a.id, { filteredActions: a.actions, skipActionSelection: true, ...(s ? { authId: s.authId } : {}) })
-      row.append(btn)
+    const s = status[a.id] || { active: null, connections: [] }
+    const active = s.connections.find((c) => c.authId === s.active)
+    const row = document.createElement('div'); row.className = 'app conn'
+    const badge = !active ? '<span class="badge b-gray">Not connected</span>' : active.expired ? '<span class="badge b-amber">Expired</span>' : '<span class="badge b-green">Active</span>'
+    const options = s.connections.map((c) => `<option value="${esc(c.authId)}" ${c.authId === s.active ? 'selected' : ''}>${esc(c.label)}${c.expired ? ' (expired)' : ''}</option>`).join('')
+    row.innerHTML = `<img src="${esc(a.icon)}" alt=""><div class="name">${esc(a.name)}<small>${esc(a.sub)}</small></div>${badge}
+      <div class="pick"><select aria-label="${esc(a.name)} account">${s.connections.length ? '' : '<option value="">Not connected</option>'}${options}<option value="__new">＋ Connect another account…</option></select></div>`
+    const select = row.querySelector('select')
+    select.onchange = async () => {
+      if (select.value === '__new') { select.value = s.active || ''; openViasocketConnection(embedToken, a.id, { filteredActions: a.actions, skipActionSelection: true }); return }
+      if (!select.value || select.value === s.active) return
+      select.disabled = true
+      try {
+        const r = await api('/api/viasocket/activate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serviceId: a.id, authId: select.value }) })
+        toast(a.name + ' now uses ' + r.label)
+        if (r.needsSetup) showSwitchBanner('Account changed. Pick the ' + (a.id === 'rowbu58rc' ? 'channel and team leader' : 'decisions and queue tables') + ' for this account, then save so the automations use it.')
+        await Promise.all([renderApps(), loadSettings()])
+      } catch (e) { toast(e.message); renderApps() }
+    }
+    if (active && active.expired) {
+      const btn = document.createElement('button'); btn.textContent = 'Reconnect'
+      btn.onclick = () => openViasocketConnection(embedToken, a.id, { filteredActions: a.actions, skipActionSelection: true, authId: active.authId })
+      row.querySelector('.pick').append(btn)
     }
     $('apps').append(row)
   }
@@ -248,9 +275,9 @@ async function renderApps() {
 window.addEventListener('message', async (event) => {
   if (event.data?.type === 'viasocket_connection_success') {
     try {
-      await api('/api/viasocket/connected', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serviceId: event.data.serviceId, authId: event.data.data.id }) })
+      const r = await api('/api/viasocket/connected', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serviceId: event.data.serviceId, authId: event.data.data.id }) })
       $('msg').textContent = ''; toast('Connected'); renderApps(); renderTestConnections(); loadSettings()
+      if (r.needsSetup) showSwitchBanner('New account connected and active. Pick its channel, team leader and tables below, then save so the automations use it.')
     } catch (e) { $('msg').textContent = e.message }
   } else if (event.data?.type === 'viasocket_connection_error') {
     $('msg').textContent = event.data.error?.message || 'Connection failed'
@@ -264,7 +291,8 @@ async function fill(id, kind, current, withNone) {
   try {
     const opts = await api('/api/options/' + kind)
     if (kind === 'users') users = opts
-    sel.innerHTML = (withNone ? '<option value="">None</option>' : '') +
+    const placeholder = withNone ? '<option value="">None</option>' : current ? '' : '<option value="">Choose…</option>'
+    sel.innerHTML = placeholder +
       opts.map((o) => `<option value="${esc(o.value)}" ${o.value === current ? 'selected' : ''}>${esc(o.label)}</option>`).join('')
   } catch { sel.innerHTML = '<option value="">Connect the app first</option>' }
 }
@@ -275,11 +303,12 @@ async function loadSettings() {
   if (cur.reviewId) $('saved').textContent = 'Automations are live.'
 }
 $('save').onclick = async () => {
+  if (!$('channel').value || !$('tl').value || !$('table').value || !$('queue').value) { $('saved').textContent = 'Choose a value for every setting first.'; return }
   const btn = $('save'); btn.disabled = true; btn.textContent = 'Saving…'
   try {
     await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channelId: $('channel').value, tlUserId: $('tl').value, tableId: $('table').value, queueTableId: $('queue').value }) })
-    $('saved').textContent = 'Automations are live.'; toast('Settings saved'); loadDecisions()
+    $('saved').textContent = 'Automations are live.'; toast('Settings saved'); $('switch-banner').classList.remove('show'); $('settings-card').classList.remove('highlight'); loadDecisions()
   } catch (e) { $('saved').textContent = 'Failed: ' + e.message; toast('Could not save settings') }
   btn.disabled = false; btn.textContent = 'Save and update automations'
 }
