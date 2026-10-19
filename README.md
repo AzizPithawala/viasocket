@@ -11,7 +11,7 @@ An agent that reviews viaSocket plugs, asks the reviewer in Slack, and records e
 
 ## Choosing accounts
 
-Slack and viaSocket Table each have a dropdown listing every connected account (for example the Slack workspace or the Table database). Pick one to make it active, or choose "Connect another account…". Old connections are kept. Switching clears the saved channel, team leader and table picks, because they belong to the old account; pick them again and save so the automations use the new account. Saving checks that the chosen tables have the required columns. To use a different viaSocket account, sign in to it in a private window first.
+Slack and viaSocket Table each have a dropdown listing every connected account (for example the Slack workspace or the Table database). Pick one to make it active, or choose "Connect another account…". Old connections are kept. Switching clears the saved channel, team leader and table picks, because they belong to the old account; pick them again and save so the automations use the new account. Saving checks that the chosen tables have the required columns. To use a different login, use the **Use a different login** link under the app: the sign-in popup always uses the account the browser is already signed into and the agent cannot change that, so the connection is made in a private window. The page notices the new account within a few seconds and offers **Use this account**. After switching, the pickers preselect `plug_decisions` and `plug_queue` if the new account already has them, and a **Required table columns** box lists what to create otherwise (with a **Check** button). Accounts that are not in use can be removed.
 
 ## Run locally
 

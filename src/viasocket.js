@@ -118,3 +118,22 @@ export function connectionsOf(connections, serviceId) {
     .filter((c) => String(c.id).endsWith(`_${serviceId}`))
     .sort((a, b) => Number(Boolean(a.isExpired)) - Number(Boolean(b.isExpired)) || String(b.updated_at).localeCompare(String(a.updated_at)))
 }
+
+/** Disconnect one connection. Delete the enabled app built on it first, or it breaks. */
+export async function revokeConnection(uniqueIdentifier, authId) {
+  return call(`/embed/authentications/revoke/${authId}`, uniqueIdentifier, undefined, 'DELETE')
+}
+
+/** status 0 deletes a flow (an enabled app, a subscription), 2 pauses it, 1 resumes or restores it. */
+export async function setFlowStatus(uniqueIdentifier, scriptId, status = 0) {
+  return call(`/embed/updatestatus/${scriptId}?status=${status}`, uniqueIdentifier, undefined, 'PUT')
+}
+
+/** Enabled-app flows of this user that run on a given connection. */
+export async function enabledAppsFor(uniqueIdentifier, authId) {
+  const response = await fetch(`${API}/projects/${process.env.VIASOCKET_PROJECT_ID}/integrations`, {
+    headers: { authorization: embedToken(uniqueIdentifier) }
+  })
+  const payload = await response.json()
+  return (payload.data?.flows || []).filter((flow) => flow.auth_id === authId && flow.status === 'active')
+}

@@ -87,6 +87,19 @@
   .app.conn { display: grid; grid-template-columns: 30px 1fr auto; gap: 4px 12px; align-items: center; }
   .app.conn .pick { grid-column: 2 / -1; }
   .app.conn select { margin-top: 2px; }
+  .linkbtn { background: none; border: 0; padding: 4px 0; color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; }
+  .linkbtn:hover { text-decoration: underline; }
+  .linkbtn.danger { color: var(--red); }
+  .actions { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 4px; }
+  .panel { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-top: 12px; display: none; }
+  .panel.show { display: block; }
+  .panel ol { margin: 8px 0 10px; padding-left: 20px; font-size: 13.5px; color: var(--muted); }
+  .panel code { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; font-size: 12.5px; word-break: break-all; }
+  .panel .found { background: var(--green-bg); color: var(--green); border-radius: 10px; padding: 10px 12px; font-weight: 600; margin-top: 10px; }
+  .panel .found button { margin-top: 8px; }
+  details.cols { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  details.cols summary { cursor: pointer; font-weight: 600; color: var(--text); }
+  details.cols code { display: block; margin: 4px 0 8px; font-size: 12px; word-break: break-word; }
   .banner { background: var(--amber-bg); color: var(--amber); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; font-weight: 600; margin: 0 0 14px; display: none; }
   .banner.show { display: block; }
   .card.highlight { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
@@ -189,6 +202,7 @@
         <p class="sub">The agent uses these on your behalf.</p>
         <div id="switch-banner" class="banner" role="status"></div>
         <div id="apps"></div>
+        <div id="login-panel" class="panel" role="region" aria-label="Use a different login"></div>
         <p id="msg" class="hint"></p>
         <p class="hint">Pick which account each app uses, or connect another one. Old connections are kept. To use a different viaSocket account, sign in to it in a private window first.</p>
       </section>
@@ -208,7 +222,13 @@
         <div class="field"><label for="tl">Team leader (gets reject messages)</label><select id="tl"></select></div>
         <div class="field"><label for="table">Decisions table</label><select id="table"></select></div>
         <div class="field"><label for="queue">Review queue table</label><select id="queue"></select></div>
-        <button class="primary" id="save">Save and update automations</button>
+        <details class="cols" id="cols">
+          <summary>Required table columns</summary>
+          <p style="margin:6px 0 2px">Decisions table <code id="cols-decisions"></code> <button type="button" class="linkbtn" data-copy="cols-decisions">Copy</button></p>
+          <p style="margin:6px 0 2px">Queue table <code id="cols-queue"></code> <button type="button" class="linkbtn" data-copy="cols-queue">Copy</button></p>
+          <button type="button" id="check-tables">Check the selected tables</button> <span id="check-result" class="hint"></span>
+        </details>
+        <button class="primary" id="save" style="margin-top:12px">Save and update automations</button>
         <p class="hint" id="saved"></p>
       </section>
     </div>
@@ -263,6 +283,19 @@ async function renderApps() {
         await Promise.all([renderApps(), loadSettings()])
       } catch (e) { toast(e.message); renderApps() }
     }
+    const actions = document.createElement('div'); actions.className = 'actions'
+    const diff = document.createElement('button'); diff.type = 'button'; diff.className = 'linkbtn'; diff.textContent = 'Use a different login'
+    diff.onclick = () => openLoginPanel(a, s.connections.map((c) => c.authId))
+    actions.append(diff)
+    for (const c of s.connections.filter((x) => x.authId !== s.active)) {
+      const rm = document.createElement('button'); rm.type = 'button'; rm.className = 'linkbtn danger'; rm.textContent = 'Remove ' + c.label
+      rm.onclick = async () => {
+        if (!confirm('Remove the connection "' + c.label + '"? Reviews will no longer be able to use it.')) return
+        try { await api('/api/viasocket/connections/' + encodeURIComponent(c.authId), { method: 'DELETE' }); toast('Removed ' + c.label); renderApps() } catch (e) { toast(e.message) }
+      }
+      actions.append(rm)
+    }
+    row.querySelector('.pick').append(actions)
     if (active && active.expired) {
       const btn = document.createElement('button'); btn.textContent = 'Reconnect'
       btn.onclick = () => openViasocketConnection(embedToken, a.id, { filteredActions: a.actions, skipActionSelection: true, authId: active.authId })
@@ -306,9 +339,9 @@ $('save').onclick = async () => {
   if (!$('channel').value || !$('tl').value || !$('table').value || !$('queue').value) { $('saved').textContent = 'Choose a value for every setting first.'; return }
   const btn = $('save'); btn.disabled = true; btn.textContent = 'Saving…'
   try {
-    await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const saveResult = await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channelId: $('channel').value, tlUserId: $('tl').value, tableId: $('table').value, queueTableId: $('queue').value }) })
-    $('saved').textContent = 'Automations are live.'; toast('Settings saved'); $('switch-banner').classList.remove('show'); $('settings-card').classList.remove('highlight'); loadDecisions()
+    $('saved').textContent = 'Automations are live' + (saveResult?.accounts ? ' on Slack: ' + (saveResult.accounts.slack || '?') + ' · Table: ' + (saveResult.accounts.table || '?') : '') + '.'; toast('Settings saved'); $('switch-banner').classList.remove('show'); $('settings-card').classList.remove('highlight'); loadDecisions()
   } catch (e) { $('saved').textContent = 'Failed: ' + e.message; toast('Could not save settings') }
   btn.disabled = false; btn.textContent = 'Save and update automations'
 }
@@ -364,6 +397,65 @@ async function loadDecisions() {
   })
 }
 
+/* ---------- Use a different login ---------- */
+let loginPoll = null
+function closeLoginPanel() { clearInterval(loginPoll); loginPoll = null; $('login-panel').classList.remove('show'); $('login-panel').innerHTML = '' }
+function openLoginPanel(app, knownIds) {
+  closeLoginPanel()
+  const known = new Set(knownIds)
+  const panel = $('login-panel'); panel.classList.add('show')
+  panel.innerHTML = `<b>Connect a different ${esc(app.name)} login</b>
+    <p class="hint" style="margin:4px 0 0">The sign-in popup always uses the account this browser is already signed into, and the agent cannot change that. A private window gives you a clean session.</p>
+    <ol><li>Open this address in a private window and enter the app password:<br><code>${esc(location.origin)}</code> <button type="button" class="linkbtn" id="copy-origin">Copy</button></li>
+      <li>There, choose <b>Connect another account…</b> under ${esc(app.name)} and sign in with the other login.</li>
+      <li>This page notices the new account by itself.</li></ol>
+    <div id="login-state" class="hint">Waiting for a new account…</div>
+    <button type="button" class="linkbtn" id="close-panel">Close</button>`
+  $('copy-origin').onclick = () => navigator.clipboard?.writeText(location.origin).then(() => toast('Address copied'))
+  $('close-panel').onclick = closeLoginPanel
+  loginPoll = setInterval(async () => {
+    const st = (await api('/api/viasocket/status').catch(() => ({})))[app.id]
+    const fresh = st?.connections.find((c) => !known.has(c.authId))
+    if (!fresh) return
+    clearInterval(loginPoll); loginPoll = null
+    $('login-state').outerHTML = `<div class="found">New account detected: ${esc(fresh.label)}<br><button type="button" class="primary" id="use-new">Use this account</button></div>`
+    $('use-new').onclick = async () => {
+      try {
+        const r = await api('/api/viasocket/activate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serviceId: app.id, authId: fresh.authId }) })
+        closeLoginPanel(); toast(app.name + ' now uses ' + r.label)
+        if (r.needsSetup) showSwitchBanner('Account changed. Pick the ' + (app.id === 'rowbu58rc' ? 'channel and team leader' : 'decisions and queue tables') + ' for this account, then save so the automations use it.')
+        await Promise.all([renderApps(), loadSettings()]); applyHints()
+      } catch (e) { toast(e.message) }
+    }
+  }, 3000)
+}
+
+/* ---------- Table hints after switching ---------- */
+async function applyHints() {
+  const h = await api('/api/setup-hints').catch(() => null)
+  if (!h) return
+  $('cols-decisions').textContent = h.required.decisions.join(', ')
+  $('cols-queue').textContent = h.required.queue.join(', ')
+  const pre = (id, value) => { if (value && !$(id).value) $(id).value = value }
+  pre('table', h.decisionsTableId); pre('queue', h.queueTableId)
+  if (!h.decisionsTableId || !h.queueTableId) {
+    $('cols').open = true
+    $('check-result').textContent = 'This account has no ' + [!h.decisionsTableId && 'plug_decisions', !h.queueTableId && 'plug_queue'].filter(Boolean).join(' or ') + ' table yet. Create it with the text columns above.'
+  }
+}
+document.addEventListener('click', (e) => {
+  const id = e.target?.dataset?.copy
+  if (id) navigator.clipboard?.writeText($(id).textContent).then(() => toast('Copied'))
+})
+$('check-tables').onclick = async () => {
+  $('check-result').textContent = 'Checking…'
+  try {
+    const r = await api('/api/check-tables', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tableId: $('table').value, queueTableId: $('queue').value }) })
+    const bad = [r.decisionsMissing?.length && 'decisions table is missing ' + r.decisionsMissing.join(', '), r.queueMissing?.length && 'queue table is missing ' + r.queueMissing.join(', ')].filter(Boolean)
+    $('check-result').textContent = bad.length ? bad.join('. ') + '.' : 'Both tables have every required column.'
+  } catch (e) { $('check-result').textContent = e.message }
+}
+
 /* ---------- Test connections ---------- */
 async function renderTestConnections() {
   const list = await api('/api/test-connections').catch(() => [])
@@ -384,7 +476,7 @@ $('app-q').oninput = () => {
 
 /* ---------- Boot ---------- */
 api('/api/viasocket/token').then((t) => { embedToken = t.token; renderApps() }).catch(() => renderApps())
-renderTestConnections(); loadSettings(); loadDecisions(); setInterval(loadDecisions, 30000)
+renderTestConnections(); loadSettings().then(applyHints); loadDecisions(); setInterval(loadDecisions, 30000)
 </script>
 <script id="viasocket-connect-script" src="https://flow.viasocket.com/connect.js"></script>
 </body>

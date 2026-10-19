@@ -1,7 +1,7 @@
 import express from 'express'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { timingSafeEqual } from 'node:crypto'
-import { embedToken, enableApp, findEnabledApp, listConnections, listOptions, runAction, connectionsOf, connectionLabel } from './viasocket.js'
+import { embedToken, enableApp, findEnabledApp, listConnections, listOptions, runAction, connectionsOf, connectionLabel, revokeConnection, setFlowStatus, enabledAppsFor } from './viasocket.js'
 import { setupFlows, reviewUrl } from './flows.js'
 import { resolvePlug, runLiveTests } from './livetest.js'
 import { searchApps } from './viasocket.js'
@@ -188,7 +188,68 @@ app.post('/api/settings', async (req, res) => {
 
     const flows = await setupFlows(REVIEWER_ID, { channelId, tlUserId, tableId, queueTableId }, state, loadSettings())
     writeFileSync(SETTINGS_FILE, JSON.stringify({ channelId, tlUserId, tableId, queueTableId, ...flows }, null, 2))
-    res.json({ ok: true, ...flows })
+    res.json({ ok: true, ...flows, accounts: await activeAccountNames() })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Name the accounts the automations now run on, so a switch is visible after saving.
+async function activeAccountNames() {
+  const connections = await listConnections(REVIEWER_ID)
+  const state = loadState()
+  const nameOf = (serviceId) => {
+    const c = connections.find((x) => x.id === state[serviceId]?.authId)
+    return c ? connectionLabel(c) : null
+  }
+  return { slack: nameOf('rowbu58rc'), table: nameOf('rowe71n93') }
+}
+
+// What the active Table account already has, so the pickers can be preselected after a switch.
+app.get('/api/setup-hints', async (req, res) => {
+  try {
+    const authId = loadState().rowe71n93?.authId
+    const tables = authId ? await listOptions(REVIEWER_ID, 'rowtzrowrz8v', 'table', {}, authId).catch(() => []) : []
+    const byName = (re) => tables.find((t) => re.test(t.label))?.value || null
+    res.json({
+      decisionsTableId: byName(/^plug_decisions$/i),
+      queueTableId: byName(/^plug_queue$/i),
+      required: { decisions: DECISION_COLUMNS, queue: QUEUE_COLUMNS },
+      accounts: await activeAccountNames()
+    })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Check the chosen tables have the required columns, without saving anything.
+app.post('/api/check-tables', async (req, res) => {
+  try {
+    const { tableId, queueTableId } = req.body
+    const authId = loadState().rowe71n93?.authId
+    if (!authId) return res.status(400).json({ error: 'connect viaSocket Table first' })
+    const result = {}
+    if (tableId) result.decisionsMissing = await missingColumns(tableId, DECISION_COLUMNS, authId)
+    if (queueTableId) result.queueMissing = await missingColumns(queueTableId, QUEUE_COLUMNS, authId)
+    res.json(result)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Remove a connection that is not in use: delete the enabled app built on it, then revoke it.
+app.delete('/api/viasocket/connections/:authId', async (req, res) => {
+  try {
+    const { authId } = req.params
+    const state = loadState()
+    const settings = loadSettings()
+    const inUse = Object.values(state).some((s) => s.authId === authId) || [settings.slackAuthId, settings.tableAuthId].includes(authId)
+    if (inUse) return res.status(400).json({ error: 'this account is in use: switch to another account first' })
+    const connections = await listConnections(REVIEWER_ID)
+    if (!connections.some((c) => c.id === authId)) return res.status(404).json({ error: 'connection not found' })
+    for (const flow of await enabledAppsFor(REVIEWER_ID, authId)) await setFlowStatus(REVIEWER_ID, flow.id, 0)
+    await revokeConnection(REVIEWER_ID, authId)
+    res.json({ ok: true })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
