@@ -1,3 +1,4 @@
+import { classifyFailure } from './review/checks.js'
 import { listConnections, connectionsOf, findEnabledApp, enableApp, listOptions, runAction, getAppSchema, searchApps, fetchTriggerSample } from './viasocket.js'
 
 const REVIEWER_ID = process.env.REVIEWER_ID || 'plug-reviewer'
@@ -17,6 +18,15 @@ function errorIn(body) {
   if (status >= 400) return excerpt(body.response?.data?.message || body.message || body.response?.data || body)
   if (body.success === false) return excerpt(body.message || body)
   return null
+}
+
+// The HTTP status behind a failed run, when the body carries one.
+const statusIn = (body) => { const n = Number(body?.response?.status ?? body?.status ?? body?.error?.status); return Number.isFinite(n) && n >= 100 ? n : null }
+
+/** Add whose-fault information to a failed entry, so only the plug's own failures can reject it. */
+function withOrigin(entry, status) {
+  const verdict = classifyFailure({ status, message: entry.detail })
+  return Object.assign(entry, { httpStatus: status, origin: verdict.origin, originReason: verdict.reason })
 }
 
 /** Find the published app a queue row points at: ids in the Developer Hub URL first, then the name. */
@@ -95,8 +105,10 @@ export async function runLiveTests({ serviceId, schema }) {
           const body = await runAction(scriptId, action.action_version_id, filled.inputData)
           const error = errorIn(body)
           Object.assign(entry, { status: error ? 'failed' : 'passed', durationMs: Date.now() - started, detail: error || `Returned ${excerpt(body, 160)}`, input: filled.inputData })
+          if (error) withOrigin(entry, statusIn(body))
         } catch (error) {
           Object.assign(entry, { status: 'failed', durationMs: Date.now() - started, detail: excerpt(error.message), input: filled.inputData })
+          withOrigin(entry, null)
         }
       }
     }
@@ -111,7 +123,7 @@ export async function runLiveTests({ serviceId, schema }) {
       try {
         const event = await fetchTriggerSample(trigger.trigger_id, authId, schema.service.auth_type || 'Auth2.0', filled.inputData)
         const error = errorIn(event)
-        if (error) Object.assign(entry, { status: 'failed', detail: error })
+        if (error) withOrigin(Object.assign(entry, { status: 'failed', detail: error }), statusIn(event))
         else if (/only a sample|stand-in|no data/i.test(String(event.viasockethelp || event.viasocket_help || ''))) {
           Object.assign(entry, { status: 'passed', detail: 'No real event yet on this account: a stand-in sample was returned.', emptyAccount: true })
         } else {
@@ -121,7 +133,7 @@ export async function runLiveTests({ serviceId, schema }) {
           Object.assign(entry, { status: 'passed', detail: missing.length ? `Event received. Keys in the declared sample but absent from the real event: ${missing.join(', ')}` : 'Event received and its keys match the declared sample.', missingKeys: missing })
         }
       } catch (error) {
-        Object.assign(entry, { status: 'failed', detail: excerpt(error.message) })
+        withOrigin(Object.assign(entry, { status: 'failed', detail: excerpt(error.message) }), null)
       }
     }
     tally(entry.status); result.triggers.push(entry)

@@ -87,6 +87,20 @@
   .app.conn { display: grid; grid-template-columns: 30px 1fr auto; gap: 4px 12px; align-items: center; }
   .app.conn .pick { grid-column: 2 / -1; }
   .app.conn select { margin-top: 2px; }
+  .score { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 4px 0 12px; }
+  .score strong { font-size: 40px; letter-spacing: -.03em; line-height: 1; }
+  .score span { color: var(--muted); font-size: 13.5px; }
+  .pts { display: inline-block; min-width: 34px; text-align: center; font-weight: 800; font-size: 12.5px; padding: 3px 7px; border-radius: 8px; }
+  .pts.plus { background: var(--green-bg); color: var(--green); } .pts.minus { background: var(--red-bg); color: var(--red); } .pts.zero { background: var(--gray-bg); color: var(--muted); }
+  .lrow { padding: 10px 0; border-top: 1px solid var(--border); font-size: 13.5px; }
+  .lrow:first-of-type { border-top: 0; }
+  .lrow .tag { font-weight: 700; font-size: 12px; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 1px 6px; margin-right: 6px; }
+  .lrow.off { opacity: .55; }
+  .fb { padding: 12px 0; border-top: 1px solid var(--border); }
+  .fb:first-of-type { border-top: 0; }
+  table.crit { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  table.crit td { padding: 5px 6px 5px 0; border-top: 1px solid var(--border); vertical-align: top; }
+  h4.sec { margin: 16px 0 4px; font-size: 14px; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
   .chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 7px 12px; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; }
   .chip:hover { border-color: var(--accent); }
@@ -209,6 +223,20 @@
         <h3>Recent decisions</h3>
         <p class="sub">Click a decision to read the full findings.</p>
         <div id="decisions"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+      </section>
+
+      <section class="card" id="learn-card">
+        <h3>Review accuracy</h3>
+        <p class="sub">The agent earns a point when you agree with its verdict and loses two when you overrule it. Each time it is overruled it writes itself a correction.</p>
+        <div class="score"><strong id="lr-score">–</strong><span id="lr-meta">points</span></div>
+        <details class="cols" id="lr-criteria"><summary>How it decides (the criteria)</summary><div id="lr-crit-body"></div></details>
+        <h4 class="sec">Waiting for your feedback</h4>
+        <div id="lr-pending"><p class="hint">Nothing waiting.</p></div>
+        <h4 class="sec">Recent outcomes</h4>
+        <div id="lr-recent"><p class="hint">No scored reviews yet.</p></div>
+        <h4 class="sec">What it has learned</h4>
+        <div id="lr-lessons"><p class="hint">No lessons yet. They appear when you overrule the agent.</p></div>
+        <div id="lr-rules"></div>
       </section>
 
       <section class="card" id="addons-card">
@@ -575,9 +603,40 @@ async function loadAddons() {
 }
 $('ad-pause-all').onclick = async () => { if (!confirm('Pause every add-on? The review agent keeps working.')) return; try { const r = await post('/api/addons/pause-all'); toast('Paused ' + r.paused); loadAddons() } catch (e) { toast(e.message) } }
 
+/* ---------- Review accuracy ---------- */
+const VERDICT_WORD = { approve: 'Approve', improve: 'Improve', reject: 'Reject', incomplete: 'Incomplete' }
+const ptsBadge = (n) => `<span class="pts ${n > 0 ? 'plus' : n < 0 ? 'minus' : 'zero'}">${n > 0 ? '+' + n : n}</span>`
+
+async function loadLearning() {
+  let d
+  try { d = await api('/api/learning') } catch (e) { $('lr-meta').textContent = e.message; return }
+  $('lr-score').textContent = d.score
+  $('lr-meta').textContent = d.agreementRate === null ? 'points · no scored reviews yet' : `points · you agreed with ${d.agreementRate}% of its last ${d.scored} verdicts`
+  $('lr-crit-body').innerHTML = `<table class="crit">${d.criteria.map((c) => `<tr><td><b>${esc(c.id)}</b></td><td><span class="badge ${c.level === 'reject' ? 'b-red' : 'b-amber'}">${esc(c.level)}</span></td><td>${esc(c.title)}<br><span class="hint">${esc(c.method)} · ${c.judgement ? 'judgement: lessons may adjust it' : 'hard rule: nothing can soften it'}</span></td></tr>`).join('')}</table><p class="hint">Approve only when nothing is found and every reject check was actually assessed.</p>`
+
+  $('lr-pending').innerHTML = d.pending.length ? d.pending.map((p) => `<div class="fb" data-key="${esc(p.key)}">
+      <b>${esc(p.plugName)}</b> <span class="id" style="color:var(--muted);font-size:12px">${esc(p.plugId)}</span> <span class="badge b-red">auto ${esc(p.final || p.recommendation)}</span>
+      <div class="hint" style="margin-top:4px">${esc(String(p.reason).split(' | ').slice(0, 3).join(' · '))}</div>
+      <div class="btnrow"><button data-fb="ok">Correct (+1)</button><button data-fb="wrong">Wrong…</button></div>
+      <div class="wrong" style="display:none;margin-top:8px"><div class="row"><div><label>It should have been</label><select class="should"><option value="improve">Improve</option><option value="approve">Approve</option><option value="reject">Reject</option></select></div><div><label>Why (optional)</label><input class="note" placeholder="what the agent got wrong"></div></div><div class="btnrow"><button class="primary" data-fb="send">Send (−2 and a lesson)</button></div></div></div>`).join('') : '<p class="hint">Nothing waiting. Automatic rejects appear here so you can confirm them.</p>'
+  document.querySelectorAll('#lr-pending .fb').forEach((el) => {
+    const send = async (body) => { try { await post('/api/learning/feedback', { key: el.dataset.key, ...body }); toast(body.correct ? '+1 for the agent' : '−2 and a lesson'); loadLearning() } catch (e) { toast(e.message) } }
+    el.querySelector('[data-fb=ok]').onclick = () => send({ correct: true })
+    el.querySelector('[data-fb=wrong]').onclick = () => { const w = el.querySelector('.wrong'); w.style.display = w.style.display === 'none' ? 'block' : 'none' }
+    el.querySelector('[data-fb=send]').onclick = () => send({ correct: false, shouldBe: el.querySelector('.should').value, note: el.querySelector('.note').value })
+  })
+
+  $('lr-recent').innerHTML = d.recent.length ? d.recent.map((h) => `<div class="lrow">${ptsBadge(h.points)} <b>${esc(h.plugName)}</b> <span class="hint">agent: ${esc(VERDICT_WORD[h.recommendation] || h.recommendation || '?')} · final: ${esc(VERDICT_WORD[h.final] || h.final || '?')}${h.mode === 'feedback' ? ' · your feedback' : ''}</span>${h.lesson?.created ? ' <span class="badge b-green">new lesson</span>' : h.lesson?.skipped ? `<div class="hint">No lesson: ${esc(h.lesson.skipped)}</div>` : ''}</div>`).join('') : '<p class="hint">No scored reviews yet.</p>'
+
+  $('lr-lessons').innerHTML = d.lessons.length ? d.lessons.map((l) => `<div class="lrow ${l.active ? '' : 'off'}" data-id="${esc(l.id)}"><span class="tag">${esc(l.criterion)}</span>${esc(l.guidance)}
+      <div class="hint">${ptsBadge(l.points)} used in ${l.uses || 0} review${l.uses === 1 ? '' : 's'} · ${l.active ? 'active' : esc(l.retiredReason || 'off')} <button class="linkbtn" data-toggle="${l.active ? 'off' : 'on'}">${l.active ? 'Turn off' : 'Turn on'}</button></div></div>`).join('') : '<p class="hint">No lessons yet. They appear when you overrule the agent.</p>'
+  document.querySelectorAll('#lr-lessons [data-toggle]').forEach((b) => { b.onclick = async () => { try { await post('/api/learning/lessons/' + b.closest('.lrow').dataset.id, { active: b.dataset.toggle === 'on' }); loadLearning() } catch (e) { toast(e.message) } } })
+  $('lr-rules').innerHTML = d.ruleReviews?.length ? `<h4 class="sec">Worth a look</h4>${d.ruleReviews.map((r) => `<div class="lrow">A hard rule was overruled: <b>${esc(r.criterion)}</b> on ${esc(r.plugId)} (agent ${esc(r.recommendation)}, you ${esc(r.final)}). The agent will not change a hard rule by itself; check whether the rule needs changing.</div>`).join('')}` : ''
+}
+
 /* ---------- Boot ---------- */
 api('/api/viasocket/token').then((t) => { embedToken = t.token; renderApps() }).catch(() => renderApps())
-renderTestConnections(); loadGallery(); loadAddons(); loadSettings().then(applyHints); loadDecisions(); setInterval(loadDecisions, 30000)
+renderTestConnections(); loadGallery(); loadAddons(); loadLearning(); loadSettings().then(applyHints); loadDecisions(); setInterval(loadDecisions, 30000)
 </script>
 <script id="viasocket-connect-script" src="https://flow.viasocket.com/connect.js"></script>
 </body>

@@ -5,11 +5,20 @@ import { embedToken, enableApp, findEnabledApp, listConnections, listOptions, ru
 import { setupFlows, reviewUrl } from './flows.js'
 import { resolvePlug, runLiveTests } from './livetest.js'
 import { createAddonsRouter } from './addons/router.js'
+import { createLearning } from './review/learning.js'
+import { createLearningRouter } from './review/router.js'
+import { readDecisionRows } from './review/rows.js'
+import { askJson } from './review/ai.js'
+import { criteriaText } from './review/criteria.js'
+import { schemaChecks, liveFindings, buildCoverage } from './review/checks.js'
 import { searchApps } from './viasocket.js'
 
 const REVIEWER_ID = process.env.REVIEWER_ID || 'plug-reviewer'
 const DATA_DIR = process.env.DATA_DIR || 'data'
 mkdirSync(DATA_DIR, { recursive: true })
+// STAGING=1 runs against separate flows and files so core changes can be tested without touching production.
+const STAGING = process.env.STAGING === '1'
+const SUFFIX = STAGING ? '.staging' : ''
 const STATE_FILE = `${DATA_DIR}/state.json`
 const APPS = {
   rowbu58rc: 'Slack',
@@ -131,9 +140,9 @@ app.get('/api/viasocket/status', async (req, res) => {
   }
 })
 
-const SETTINGS_FILE = `${DATA_DIR}/settings.json`
+const SETTINGS_FILE = `${DATA_DIR}/settings${SUFFIX}.json`
 // First start on a fresh DATA_DIR: seed the flow ids so setup updates the existing automations.
-if (existsSync('seed/settings.json')) {
+if (!STAGING && existsSync('seed/settings.json')) { // staging must never inherit the production flow ids
   const seed = JSON.parse(readFileSync('seed/settings.json', 'utf8'))
   const current = existsSync(SETTINGS_FILE) ? JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) : {}
   // Keys already saved here win; keys only the seed has (such as newly created flow ids) are added.
@@ -187,7 +196,7 @@ app.post('/api/settings', async (req, res) => {
     if (queueMissing.length) problems.push(`The queue table is missing columns: ${queueMissing.join(', ')}.`)
     if (problems.length) return res.status(400).json({ error: problems.join(' ') + ' Add them as text columns in this account, then save again.' })
 
-    const flows = await setupFlows(REVIEWER_ID, { channelId, tlUserId, tableId, queueTableId }, state, loadSettings())
+    const flows = await setupFlows(REVIEWER_ID, { channelId, tlUserId, tableId, queueTableId }, state, loadSettings(), { staging: STAGING })
     writeFileSync(SETTINGS_FILE, JSON.stringify({ channelId, tlUserId, tableId, queueTableId, ...flows }, null, 2))
     res.json({ ok: true, ...flows, accounts: await activeAccountNames() })
   } catch (error) {
@@ -371,7 +380,15 @@ app.post('/api/live-test', (req, res) => {
       } else {
         payload.plug = { ...row.plug, ...definitionFrom(plug.schema) }
         payload.liveResults = await runLiveTests(plug)
+        // Rules decided by code: schema checks (I1, I2, I3) and live failures that are the plug's own (R1).
+        const schema = schemaChecks(plug.schema), live = liveFindings(payload.liveResults)
+        payload.preFindings = [...live.findings, ...schema.findings]
+        payload.patch = schema.patch
+        payload.notCounted = live.notCounted
       }
+      // Plug code (R3, R4) needs Developer Hub access, which is not connected: those stay "not assessed".
+      payload.coverage = buildCoverage({ live: payload.liveResults, codeAvailable: false })
+      payload.criteriaText = criteriaText(learning.activeLessons())
     } catch (error) {
       payload.liveResults = { status: 'error', reason: error.message }
     }
@@ -382,6 +399,14 @@ app.post('/api/live-test', (req, res) => {
     }
   })()
 })
+
+// Points and lessons: learned from the decisions table the core already writes.
+const learning = createLearning({
+  dataDir: DATA_DIR, suffix: SUFFIX, askJson, baselineOnFirstRun: process.env.LEARN_FROM_HISTORY !== '1',
+  readRows: () => readDecisionRows({ state: loadState(), settings: loadSettings() })
+})
+app.use('/api/learning', createLearningRouter({ learning }))
+setInterval(() => learning.sync().catch((e) => console.error('learning sync failed:', e.message)), 5 * 60 * 1000)
 
 // Add-ons: built on top of the decisions data, in their own code and their own automations.
 app.use('/api/addons', createAddonsRouter({ loadState, loadSettings, dataDir: DATA_DIR, reviewerId: REVIEWER_ID }))

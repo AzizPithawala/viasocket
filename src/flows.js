@@ -1,5 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { embedToken } from './viasocket.js'
+import { criteriaText } from './review/criteria.js'
+import { decideVerdict } from './review/verdict.js'
 
 const PROJECT = process.env.VIASOCKET_PROJECT_ID
 const API = process.env.VIASOCKET_API_URL
@@ -55,27 +57,40 @@ const readFlow = (token, scriptId) =>
   post('scriiZYPU6I3', { scriptId, env: 'prod', proxy_auth_token: token })
 
 // Step code. Settings are baked in as JSON literals; findings arrive per run in context.req.body.
+// The AI only reports findings (R2, I3, I4). Code decides the verdict with decideVerdict, the same function
+// the tests run, embedded here with Function#toString.
 function auditStep(decideUrl) {
   return `
+${decideVerdict.toString()}
 const body = context?.req?.body || {}
 console.log('### Auditing ' + body.plugName)
 const plug = body.plug || {}
 const hasDefinition = Boolean(plug.auth || (plug.actions && plug.actions.length) || (plug.triggers && plug.triggers.length))
+const notAssessed = body.coverage && body.coverage.notAssessed ? body.coverage.notAssessed.slice() : ['R1', 'R3', 'R4']
+const JUDGEMENT = ['R2', 'I3', 'I4']
 let audit = {}
 if (!hasDefinition) {
   // Never judge what cannot be seen: no definition means a person decides, never an auto-reject.
-  console.log('### No plug definition supplied: skipping the AI audit')
-  audit = { recommendation: 'improve', summary: 'No plug definition was available to audit (only a Developer Hub link). Review the plug manually.', findings: [], unverified: ['plug definition not available: nothing was audited'] }
+  console.log('### No plug definition supplied: nothing to judge')
+  audit = { recommendation: 'incomplete', summary: 'No plug definition was available to audit. A person has to decide.', findings: [], unverified: ['plug definition not available: nothing was audited'], patch: [], notCounted: [], coverage: { notAssessed: ['R1', 'R2', 'R3', 'R4'] } }
 } else {
   const result = await runAiModel({ inputData: {
-    query: 'Review this viaSocket plug against the official API docs at ' + body.docsUrl + '. Plug definition (JSON): ' + JSON.stringify(plug).slice(0, 9000) + '\\nLive test results from running the plug on a test account (JSON): ' + JSON.stringify(body.liveResults || { status: 'not_tested' }).slice(0, 5000),
-    prompt: 'You are a strict viaSocket plug reviewer. Read the API docs URL. Compare auth type, endpoints, required params, field design, naming and sample data of the plug against the docs and these criteria:\\n' + ${JSON.stringify(readFileSync('criteria.md', 'utf8'))} + '\\nLive test rules: an action or trigger with status failed is a blocking finding and its real error text is the evidence (quote it). Anything with status not_run, or live status not_tested, not_resolved or error, goes under unverified and is never a reason to reject. Write actions are never run; do not treat that as a defect. Only report what you can support from the docs, the plug definition or the live results. Return ONLY JSON.',
+    query: 'Review this viaSocket plug against the official API docs at ' + body.docsUrl + '. Plug definition (JSON): ' + JSON.stringify(plug).slice(0, 9000) + '\\nLive test results (JSON, for context): ' + JSON.stringify(body.liveResults || { status: 'not_tested' }).slice(0, 3000),
+    prompt: 'You review a viaSocket plug against its official API docs. Criteria:\\n' + (body.criteriaText || ${JSON.stringify(criteriaText())}) + '\\nRead the docs URL. For R2, compare each operation\\'s documented parameters with the action fields and quote the docs for every documented parameter that is missing. Set docs_read to false if you could not open or read the docs. Return ONLY JSON.',
     threadid: 'plug-audit-' + body.plugId,
     reasoning: 'medium',
     response_type: 'json_object',
-    response_json_structure: '{"recommendation":"approve|improve|reject","summary":"string","findings":[{"criterion":"number","severity":"blocking|minor","detail":"string","evidence":"string"}],"unverified":["string"]}'
+    response_json_structure: '{"summary":"string","docs_read":true,"findings":[{"criterion":"R2|I3|I4","detail":"string","evidence":"string"}]}'
   }})
-  try { audit = JSON.parse(result?.content || '{}') } catch (e) { audit = { recommendation: 'improve', summary: 'Audit output could not be parsed', findings: [], unverified: ['audit parse failure'] } }
+  let ai = {}
+  try { ai = JSON.parse(result?.content || '{}') } catch (e) { ai = { docs_read: false, summary: 'The AI answer could not be parsed.' } }
+  if (!ai.docs_read) notAssessed.push('R2')
+  const aiFindings = (Array.isArray(ai.findings) ? ai.findings : []).filter((f) => JUDGEMENT.includes(f.criterion)).map((f) => ({ criterion: f.criterion, severity: f.criterion === 'R2' ? 'blocking' : 'minor', detail: String(f.detail || '').slice(0, 300), evidence: String(f.evidence || '').slice(0, 300) }))
+  const pre = Array.isArray(body.preFindings) ? body.preFindings : []
+  const outcome = decideVerdict(pre.concat(aiFindings), { complete: notAssessed.length === 0, notAssessed })
+  const why = { R1: 'no live run completed', R2: 'API docs not read', R3: 'plug code not available (error component)', R4: 'plug code not available (validation)' }
+  const counts = outcome.counted.reduce((n, f) => { n[f.severity === 'blocking' ? 0 : 1]++; return n }, [0, 0])
+  audit = { recommendation: outcome.verdict, summary: (outcome.verdict + ': ' + counts[0] + ' reject and ' + counts[1] + ' improve finding(s). ' + (ai.summary || '')).slice(0, 400), findings: outcome.counted, unverified: notAssessed.map((id) => id + ' not assessed: ' + (why[id] || 'unknown')), patch: body.patch || [], notCounted: body.notCounted || [], coverage: { notAssessed }, droppedFindings: outcome.dropped }
 }
 const handoff = await axios.post(${JSON.stringify(decideUrl)}, {
   plugId: body.plugId, plugName: body.plugName, assigneeSlackId: body.assigneeSlackId, assigneeName: body.assigneeName,
@@ -91,7 +106,7 @@ function decideSteps(settings, slackAuthId, tableAuthId) {
 const b = context?.req?.body || {}
 const result = await runAiModel({ inputData: {
   query: 'Findings for plug ' + b.plugName + ': ' + JSON.stringify(b.audit),
-  prompt: 'You are the decision agent. Re-check these audit findings against the criteria. Do not repeat the audit: check that each finding is supported by its evidence, that the recommendation follows the verdict rules, and downgrade or upgrade it if it does not. Criteria and verdict rules:\\n' + ${S(readFileSync('criteria.md', 'utf8'))} + '\\nReturn ONLY JSON.',
+  prompt: 'You are the decision agent. Re-check these audit findings against the criteria. Do not repeat the audit: check that each finding is supported by its evidence, that the recommendation follows the verdict rules, and downgrade or upgrade it if it does not. Criteria and verdict rules:\\n' + ${S(criteriaText())} + '\\nReturn ONLY JSON.',
   threadid: 'plug-decide-' + b.plugId,
   reasoning: 'medium',
   response_type: 'json_object',
@@ -114,10 +129,12 @@ const lines = (b.audit?.findings || []).map((f) => '• [' + f.severity + '] #' 
 const live = b.live || {}
 const liveItems = [].concat(live.actions || [], live.triggers || [])
 const liveFailed = liveItems.filter((i) => i.status === 'failed').map((i) => '• FAILED ' + i.name + ': ' + String(i.detail).slice(0, 160))
+const patchLines = (b.audit?.patch || []).slice(0, 6).map((p) => '• ' + p.operation + ' › ' + p.field + ': ' + Object.entries(p.set).map(([k, v]) => k + ' = "' + v + '"').join(', '))
+const notCounted = (b.audit?.notCounted || []).slice(0, 4).map((n) => '• Not counted (' + n.origin + '): ' + n.name + ': ' + String(n.detail).slice(0, 120))
 const liveLine = live.status === 'tested'
   ? '*Live test:* ' + live.summary.passed + ' passed, ' + live.summary.failed + ' failed, ' + live.summary.notRun + ' not run (writes are never run)'
   : '*Live test:* not run (' + (live.reason || 'no live results') + ')'
-const content = '*Plug review: ' + b.plugName + '* (' + b.plugId + ')\\nAgent recommends: *' + rec + '* | Re-check says: *' + re.verdict + '*\\n' + (b.audit?.summary || '') + '\\n' + liveLine + '\\n' + liveFailed.join('\\n') + '\\n' + lines.join('\\n') + '\\n_Not verified: ' + ((b.audit?.unverified || []).join('; ') || 'nothing listed') + '_'
+const content = ('*Plug review: ' + b.plugName + '* (' + b.plugId + ')\\nAgent recommends: *' + rec + '* | Re-check says: *' + re.verdict + '*\\n' + (b.audit?.summary || '') + '\\n' + liveLine + '\\n' + liveFailed.join('\\n') + (notCounted.length ? '\\n' + notCounted.join('\\n') : '') + '\\n' + lines.join('\\n') + (patchLines.length ? '\\n*Suggested fixes:*\\n' + patchLines.join('\\n') : '') + '\\n_Not assessed: ' + ((b.audit?.unverified || []).join('; ') || 'nothing') + '_').slice(0, 2900)
 await askReviewer({ inputData: {
   messageto: 'channel', channel_id: ${S(settings.channelId)}, content, operation: 'Approval',
   buttons: { Approve: 'approve', Reject: 'reject', Improve: 'improve' },
@@ -221,18 +238,20 @@ async function setIntakeTrigger(token, scriptId, tableAuthId, queueTableId) {
   })
 }
 
-export async function setupFlows(uniqueIdentifier, settings, state, existing = {}) {
+export async function setupFlows(uniqueIdentifier, settings, state, existing = {}, options = {}) {
+  const prefix = options.staging ? 'STAGING: ' : ''
   const token = await proxyToken(uniqueIdentifier)
   const slackAuth = state.rowbu58rc.authId
   const tableAuth = state.rowe71n93.authId
-  const decideId = existing.decideId || (await createWebhookFlow(token, 'Plug decision agent', 'Re-checks audit findings, asks the reviewer in Slack, then acts and records the decision.'))
+  const decideId = existing.decideId || (await createWebhookFlow(token, prefix + 'Plug decision agent', 'Re-checks audit findings, asks the reviewer in Slack, then acts and records the decision.'))
   await saveSteps(token, decideId, decideSteps(settings, slackAuth, tableAuth))
-  const reviewId = existing.reviewId || (await createWebhookFlow(token, 'Plug review agent', 'Audits a plug against its API docs and hands findings to the decision agent.'))
+  const reviewId = existing.reviewId || (await createWebhookFlow(token, prefix + 'Plug review agent', 'Audits a plug against its API docs and hands findings to the decision agent.'))
   await saveSteps(token, reviewId, [
     { stepname: 'audit', code: auditStep(`${RUN}/${decideId}`), service_action_functions: [{ name: 'runAiModel', auth_id: 'NoAuth', action_id: AI.actionId }] }
   ])
   let intakeId = existing.intakeId
-  if (settings.queueTableId) {
+  // Staging flows are entered by webhook only: no queue trigger, so they can never start from a real queue row.
+  if (settings.queueTableId && !options.staging) {
     if (!intakeId) intakeId = (await post('scrisgf5H0hN', { title: 'Plug intake', description: 'A new row in the plug queue table starts a plug review.', projectId: PROJECT, proxy_auth_token: token })).data.script_id
     // The trigger is bound to a Table connection and table: re-set it when either changed.
     if (!existing.intakeId || existing.queueTableId !== settings.queueTableId || existing.tableAuthId !== tableAuth) await setIntakeTrigger(token, intakeId, tableAuth, settings.queueTableId)
