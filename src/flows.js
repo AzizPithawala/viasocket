@@ -59,7 +59,7 @@ const readFlow = (token, scriptId) =>
 // Step code. Settings are baked in as JSON literals; findings arrive per run in context.req.body.
 // The AI only reports findings (R2, I3, I4). Code decides the verdict with decideVerdict, the same function
 // the tests run, embedded here with Function#toString.
-function auditStep(decideUrl) {
+export function auditStep(decideUrl) {
   return `
 ${decideVerdict.toString()}
 const body = context?.req?.body || {}
@@ -68,6 +68,7 @@ const plug = body.plug || {}
 const hasDefinition = Boolean(plug.auth || (plug.actions && plug.actions.length) || (plug.triggers && plug.triggers.length))
 const notAssessed = body.coverage && body.coverage.notAssessed ? body.coverage.notAssessed.slice() : ['R1', 'R3', 'R4']
 const JUDGEMENT = ['R2', 'I3', 'I4']
+const scope = body.scope || null
 let audit = {}
 if (!hasDefinition) {
   // Never judge what cannot be seen: no definition means a person decides, never an auto-reject.
@@ -75,8 +76,8 @@ if (!hasDefinition) {
   audit = { recommendation: 'incomplete', summary: 'No plug definition was available to audit. A person has to decide.', findings: [], unverified: ['plug definition not available: ' + ((body.liveResults && body.liveResults.reason) || 'nothing was audited')], patch: [], notCounted: [], coverage: { notAssessed: ['R1', 'R2', 'R3', 'R4'] } }
 } else {
   const result = await runAiModel({ inputData: {
-    query: 'Review this viaSocket plug against the official API docs at ' + body.docsUrl + '. Plug definition (JSON): ' + JSON.stringify(plug).slice(0, 9000) + '\\nLive test results (JSON, for context): ' + JSON.stringify(body.liveResults || { status: 'not_tested' }).slice(0, 3000),
-    prompt: 'You review a viaSocket plug against its official API docs. Criteria:\\n' + (body.criteriaText || ${JSON.stringify(criteriaText())}) + '\\nRead the docs URL. For R2, compare each operation\\'s documented parameters with the action fields and quote the docs for every documented parameter that is missing. Set docs_read to false if you could not open or read the docs. Return ONLY JSON.',
+    query: 'Review this viaSocket plug ' + (scope ? '(only the ' + scope.type + ' "' + scope.name + '") ' : '') + 'against the official API docs at ' + (body.docsUrl || '(none found)') + '. Plug definition (JSON): ' + JSON.stringify(plug).slice(0, 9000) + '\\nLive test results (JSON, for context): ' + JSON.stringify(body.liveResults || { status: 'not_tested' }).slice(0, 3000),
+    prompt: 'You review a viaSocket plug against its official API docs. Criteria:\\n' + (body.criteriaText || ${JSON.stringify(criteriaText())}) + '\\nRead the docs URL. For R2, compare each operation\\'s documented parameters with the action fields and quote the docs for every documented parameter that is missing. Set docs_read to false if you could not open or read the docs.' + (scope ? ' Review ONLY the ' + scope.type + ' "' + scope.name + '": the plug definition contains only that operation, so judge nothing else.' : '') + ' Return ONLY JSON.',
     threadid: 'plug-audit-' + body.plugId,
     reasoning: 'medium',
     response_type: 'json_object',
@@ -84,23 +85,25 @@ if (!hasDefinition) {
   }})
   let ai = {}
   try { ai = JSON.parse(result?.content || '{}') } catch (e) { ai = { docs_read: false, summary: 'The AI answer could not be parsed.' } }
-  if (!ai.docs_read) notAssessed.push('R2')
-  const aiFindings = (Array.isArray(ai.findings) ? ai.findings : []).filter((f) => JUDGEMENT.includes(f.criterion)).map((f) => ({ criterion: f.criterion, severity: f.criterion === 'R2' ? 'blocking' : 'minor', detail: String(f.detail || '').slice(0, 300), evidence: String(f.evidence || '').slice(0, 300) }))
+  // Docs that were not found, or found with low confidence, cannot be used to reject: R2 is then not assessed.
+  const lowDocs = !body.docsUrl || Boolean(body.docsInfo && body.docsInfo.confidence === 'low')
+  if ((lowDocs || !ai.docs_read) && !notAssessed.includes('R2')) notAssessed.push('R2')
+  const aiFindings = (Array.isArray(ai.findings) ? ai.findings : []).filter((f) => JUDGEMENT.includes(f.criterion) && !(lowDocs && f.criterion === 'R2')).map((f) => ({ criterion: f.criterion, severity: f.criterion === 'R2' ? 'blocking' : 'minor', detail: String(f.detail || '').slice(0, 300), evidence: String(f.evidence || '').slice(0, 300) }))
   const pre = Array.isArray(body.preFindings) ? body.preFindings : []
   const outcome = decideVerdict(pre.concat(aiFindings), { complete: notAssessed.length === 0, notAssessed })
   const why = { R1: 'no live run completed', R2: 'API docs not read', R3: 'plug code not available (error component)', R4: 'plug code not available (validation)' }
   const counts = outcome.counted.reduce((n, f) => { n[f.severity === 'blocking' ? 0 : 1]++; return n }, [0, 0])
-  audit = { recommendation: outcome.verdict, summary: (outcome.verdict + ': ' + counts[0] + ' reject and ' + counts[1] + ' improve finding(s). ' + (ai.summary || '')).slice(0, 400), findings: outcome.counted, unverified: notAssessed.map((id) => id + ' not assessed: ' + ((body.coverage && body.coverage.reasons && body.coverage.reasons[id]) || why[id] || 'unknown')), patch: body.patch || [], notCounted: body.notCounted || [], coverage: { notAssessed }, droppedFindings: outcome.dropped }
+  audit = { recommendation: outcome.verdict, summary: (outcome.verdict + ': ' + counts[0] + ' reject and ' + counts[1] + ' improve finding(s). ' + (ai.summary || '')).slice(0, 400), findings: outcome.counted, unverified: notAssessed.map((id) => id + ' not assessed: ' + ((body.coverage && body.coverage.reasons && body.coverage.reasons[id]) || why[id] || 'unknown')), patch: body.patch || [], notCounted: body.notCounted || [], coverage: { notAssessed }, droppedFindings: outcome.dropped, scope, docs: body.docsInfo || null }
 }
 const handoff = await axios.post(${JSON.stringify(decideUrl)}, {
   plugId: body.plugId, plugName: body.plugName, assigneeSlackId: body.assigneeSlackId, assigneeName: body.assigneeName,
-  docsUrl: body.docsUrl, audit, live: body.liveResults || null
+  docsUrl: body.docsUrl, audit, live: body.liveResults || null, scope, docsInfo: body.docsInfo || null
 })
 return { audit, handoffStatus: handoff.status }
 `
 }
 
-function decideSteps(settings, slackAuthId, tableAuthId) {
+export function decideSteps(settings, slackAuthId, tableAuthId) {
   const S = JSON.stringify
   const recheck = `
 const b = context?.req?.body || {}
@@ -134,7 +137,9 @@ const notCounted = (b.audit?.notCounted || []).slice(0, 4).map((n) => '• Not c
 const liveLine = live.status === 'tested'
   ? '*Live test:* ' + live.summary.passed + ' passed, ' + live.summary.failed + ' failed, ' + live.summary.notRun + ' not run (writes are never run)'
   : '*Live test:* not run (' + (live.reason || 'no live results') + ')'
-const content = ('*Plug review: ' + b.plugName + '* (' + b.plugId + ')\\nAgent recommends: *' + rec + '* | Re-check says: *' + re.verdict + '*\\n' + (b.audit?.summary || '') + '\\n' + liveLine + '\\n' + liveFailed.join('\\n') + (notCounted.length ? '\\n' + notCounted.join('\\n') : '') + '\\n' + lines.join('\\n') + (patchLines.length ? '\\n*Suggested fixes:*\\n' + patchLines.join('\\n') : '') + '\\n_Not assessed: ' + ((b.audit?.unverified || []).join('; ') || 'nothing') + '_').slice(0, 2900)
+const scopeLine = b.scope ? '_Reviewing only the ' + b.scope.type + ' "' + b.scope.name + '" (' + b.scope.version + ')_\\n' : ''
+const docsLine = b.docsInfo && b.docsInfo.url ? '_Docs: ' + b.docsInfo.url + ' (' + b.docsInfo.source + ', ' + b.docsInfo.confidence + ' confidence)_' : '_Docs: none found_'
+const content = ('*Plug review: ' + b.plugName + '* (' + b.plugId + ')\\n' + scopeLine + 'Agent recommends: *' + rec + '* | Re-check says: *' + re.verdict + '*\\n' + (b.audit?.summary || '') + '\\n' + liveLine + '\\n' + liveFailed.join('\\n') + (notCounted.length ? '\\n' + notCounted.join('\\n') : '') + '\\n' + lines.join('\\n') + (patchLines.length ? '\\n*Suggested fixes:*\\n' + patchLines.join('\\n') : '') + '\\n' + docsLine + '\\n_Not assessed: ' + ((b.audit?.unverified || []).join('; ') || 'nothing') + '_').slice(0, 2900)
 await askReviewer({ inputData: {
   messageto: 'channel', channel_id: ${S(settings.channelId)}, content, operation: 'Approval',
   buttons: { Approve: 'approve', Reject: 'reject', Improve: 'improve' },
@@ -150,7 +155,7 @@ const clicked = ask.actions?.[0]?.value
 const d = ask.mode === 'auto' ? ask : { decision: ['approve', 'reject', 'improve'].includes(clicked) ? clicked : 'unknown', mode: 'click', by: ask.user?.name }
 const re = context?.res?.recheck || {}
 if (d.decision === 'unknown' || !d.decision) return { skipped: 'no valid decision' }
-const key = b.plugId + ':' + d.decision
+const key = b.plugId + (b.scope ? '#' + b.scope.id : '') + ':' + d.decision
 const liveBits = [].concat(b.live?.actions || [], b.live?.triggers || []).filter((i) => i.status === 'failed').map((i) => 'LIVE FAIL ' + i.name + ': ' + String(i.detail).slice(0, 140))
 const liveHead = b.live?.status === 'tested' ? 'Live: ' + b.live.summary.passed + ' passed, ' + b.live.summary.failed + ' failed, ' + b.live.summary.notRun + ' not run' : 'Live: not run'
 const reason = [liveHead].concat(liveBits, (b.audit?.findings || []).map((f) => '#' + f.criterion + ' ' + f.detail)).join(' | ') || b.audit?.summary || ''
@@ -199,15 +204,15 @@ return { recorded: true, status, key, note }
 }
 
 // Intake: a new row in the queue table starts a review. Keys are those of the real sample event.
-function intakeSteps(reviewUrlValue) {
+export function intakeSteps(reviewUrlValue) {
   const code = `
 const row = context?.req?.body || {}
-if (!row.name || !row.docs_url) {
-  console.log('### Row ' + row.rowid + ' skipped: plug id and docs URL are required')
+if (!row.name || (!row.docs_url && !row.dh_pllug_url)) {
+  console.log('### Row ' + row.rowid + ' skipped: a plug id and either a docs URL or a Developer Hub link are required')
   return { skipped: 'incomplete row', rowid: row.rowid }
 }
 const payload = {
-  plugId: row.name, plugName: row.plug_name || row.name, docsUrl: row.docs_url,
+  plugId: row.name, plugName: row.plug_name || row.name, docsUrl: row.docs_url || '',
   assigneeName: row.assignee_name || '', assigneeSlackId: row.assignee_slack || '',
   plug: { developerHubUrl: row.dh_pllug_url || null }
 }

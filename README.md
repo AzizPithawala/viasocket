@@ -37,6 +37,14 @@ With `DEVHUB_ORG`, `DEVHUB_TOKEN` and `DEVHUB_API_BASE` set, the agent reads the
 - A draft or private plug (not in the public catalog) now gets a real definition from Developer Hub, so the schema checks (I1 to I3) and the docs comparison (R2) run on it. Live runs for such plugs (R1) are not built yet and are reported as not assessed.
 - A same-named public app is never used in place of the plug under review.
 
+## Reviewing one action or trigger
+
+The submit form has a **Developer Hub link** field. Open an action or trigger in Developer Hub and paste its address (`…/developer/<org>/plugin/<plugId>/<action|trigger>/<id>?versionId=…`): **only that operation is reviewed** (its code, its fields, its live run if it is published), and if the link names a version, that version. A link to the whole plug (`…/analytics`) reviews all of it. A link for another org is refused, and a link to an action that is not in the plug stops the review with the reason. The decision records show "Plug › Action" and use a key per operation, so two actions of one plug do not block each other.
+
+**API docs are optional.** Order of preference: the link you submitted; a doc link stored with the plug in Developer Hub (only AI-created plugs have one); otherwise a web search for that operation, accepted only if the page is on the provider's own domain and answers. Every review says where the docs came from and how sure it is. Docs found with low confidence are never used to reject: R2 is reported as "not assessed" instead. Docs are not stored on actions in Developer Hub, so the search is needed for most plugs.
+
+If the embed AI endpoint reports "Plan credits are exhausted", the shared AI helper (`src/review/ai.js`) falls back to the built-in Run AI Model action. Free-text add-on requests (`src/addons/analyze.js`) do not use it yet; the ready-made add-ons need no AI.
+
 ## Add-ons
 
 Users can build on top of the review agent without changing it. Pick a ready-made add-on (decision digest, reject alert, developer summary) or describe one in plain words. The agent turns the words into a small spec (AI), then checks it against reality in plain code: does the data exist, are the apps connected, is it something it can build. It shows a verdict (I can build this / part of this / I can't, and why) and builds nothing until the user approves. Then: preview (computed from the real decisions table and double-checked), send a test, turn on.

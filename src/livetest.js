@@ -81,6 +81,13 @@ async function fillInputs(schema, versionId, authId) {
   return { inputData }
 }
 
+/** The catalog schema narrowed to one action or trigger (by id, else by name). */
+export function scopeSchema(schema, only) {
+  if (!only) return schema
+  const same = (x) => (only.actionId && (x.action_id === only.actionId || x.trigger_id === only.actionId)) || String(x.name).toLowerCase() === String(only.name).toLowerCase()
+  return { ...schema, actions: (schema.actions || []).filter(same), triggers: (schema.triggers || []).filter(same) }
+}
+
 /** Run every read action and fetch one event per trigger on the reviewer's test connection. */
 export async function runLiveTests({ serviceId, schema }) {
   const result = { serviceId, name: schema.service.name, status: 'tested', actions: [], triggers: [], summary: { passed: 0, failed: 0, notRun: 0 } }

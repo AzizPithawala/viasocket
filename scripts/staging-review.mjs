@@ -1,9 +1,10 @@
 // Sends one plug through a STAGING server's review path and prints what the staging review flow concluded.
-//   node --env-file=.env scripts/staging-review.mjs <plugId> "<plug name>" [developerHubUrl] [port] [docsUrl]
+//   node --env-file=.env scripts/staging-review.mjs <plugId> "<plug name>" [developerHubUrl] [port] [docsUrl | none]
 import { readFileSync } from 'node:fs'
 import { embedToken } from '../src/viasocket.js'
 
-const [plugId, plugName, dhUrl = '', port = '3001', docsUrl = 'https://developers.notion.com/reference/intro'] = process.argv.slice(2)
+const [plugId, plugName, dhUrl = '', port = '3001', docsArg = 'none'] = process.argv.slice(2)
+const docsUrl = docsArg === 'none' ? '' : docsArg
 const set = JSON.parse(readFileSync(`${process.env.DATA_DIR || 'data'}/settings.staging.json`, 'utf8'))
 const res = await fetch(`http://localhost:${port}/api/live-test`, {
   method: 'POST', headers: { 'Content-Type': 'application/json', 'x-intake-key': process.env.INTAKE_KEY },
@@ -19,6 +20,7 @@ for (let i = 0; i < 48; i++) {
     const a = snap.audit?.audit || snap.audit || {}
     const by = {}; for (const f of a.findings || []) by[f.criterion] = (by[f.criterion] || 0) + 1
     console.log(`REVIEW ${run.status} | verdict: ${a.recommendation} | findings: ${JSON.stringify(by)} | patch entries: ${(a.patch || []).length}`)
+    console.log('scope:', JSON.stringify(a.scope), '\ndocs:', JSON.stringify(a.docs))
     console.log('not assessed:'); for (const u of a.unverified || []) console.log('  -', u)
     for (const f of (a.findings || []).filter((x) => x.severity === 'blocking').slice(0, 6)) console.log('  [' + f.criterion + '] ' + f.detail.slice(0, 110) + '\n        evidence: ' + String(f.evidence).slice(0, 150))
     process.exit(0)

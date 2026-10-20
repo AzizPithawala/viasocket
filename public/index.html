@@ -210,9 +210,10 @@
         <form id="submit-form">
           <div class="row">
             <div class="field"><label for="f-id">Plug ID *</label><input id="f-id" required placeholder="e.g. PLUG-1042"></div>
-            <div class="field"><label for="f-name">Plug name</label><input id="f-name" placeholder="e.g. Tally"></div>
+            <div class="field"><label for="f-name">Plug name</label><input id="f-name" placeholder="Taken from Developer Hub if empty"></div>
           </div>
-          <div class="field"><label for="f-docs">API docs URL *</label><input id="f-docs" type="url" required placeholder="https://developers.example.com/docs"></div>
+          <div class="field"><label for="f-dh">Developer Hub link to the action or trigger</label><input id="f-dh" type="url" placeholder="https://flow.viasocket.com/developer/…/plugin/…/action/…"><p class="hint" style="margin:4px 0 0">Open the action or trigger in Developer Hub and copy its address. Only that one is reviewed. A link to the whole plug reviews all of it.</p></div>
+          <div class="field"><label for="f-docs">API docs URL (optional)</label><input id="f-docs" type="url" placeholder="Leave empty and the agent finds the docs for that action"></div>
           <div class="field"><label for="f-assignee">Developer</label><select id="f-assignee"><option value="">None</option></select></div>
           <button class="primary" id="f-submit" type="submit">Add to review queue</button>
           <p class="hint">Without a plug definition the agent will not judge the plug. It asks you to decide instead.</p>
@@ -409,8 +410,9 @@ $('submit-form').onsubmit = async (e) => {
   const btn = $('f-submit'); btn.disabled = true; btn.textContent = 'Adding…'
   const sel = $('f-assignee')
   try {
+    if (!$('f-dh').value.trim() && !$('f-docs').value.trim()) throw new Error('Add the Developer Hub link, or the API docs URL.')
     await api('/api/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-      plugId: $('f-id').value.trim(), plugName: $('f-name').value.trim(), docsUrl: $('f-docs').value.trim(),
+      plugId: $('f-id').value.trim(), plugName: $('f-name').value.trim(), docsUrl: $('f-docs').value.trim(), dhUrl: $('f-dh').value.trim(),
       assigneeSlackId: sel.value, assigneeName: sel.value ? sel.options[sel.selectedIndex].text : '' }) })
     $('submit-form').reset(); toast('Added to the queue. The review starts in about two minutes.')
   } catch (err) { toast(err.message) }
