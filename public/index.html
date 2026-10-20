@@ -101,6 +101,9 @@
   table.crit { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
   table.crit td { padding: 5px 6px 5px 0; border-top: 1px solid var(--border); vertical-align: top; }
   h4.sec { margin: 16px 0 4px; font-size: 14px; }
+  .diff { font-size: 12.5px; margin: 6px 0; } .diff div { padding: 2px 0; }
+  .diff .from { color: var(--red); text-decoration: line-through; } .diff .to { color: var(--green); font-weight: 600; }
+  .diff code { background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 0 5px; font-size: 12px; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
   .chip { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 7px 12px; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; }
   .chip:hover { border-color: var(--accent); }
@@ -238,6 +241,13 @@
         <h4 class="sec">What it has learned</h4>
         <div id="lr-lessons"><p class="hint">No lessons yet. They appear when you overrule the agent.</p></div>
         <div id="lr-rules"></div>
+      </section>
+
+      <section class="card" id="fix-card">
+        <h3>Fixes ready to apply</h3>
+        <p class="sub">After a review you chose <b>Improve</b> for, the agent can write its wording fixes (labels, placeholders, help) into the <b>draft</b> in Developer Hub. You preview the exact changes first, and you can undo them. Published versions are never edited.</p>
+        <p class="hint" id="fix-off" style="display:none">Writing to Developer Hub is switched off on this server, so you can preview but not apply.</p>
+        <div id="fix-list"><p class="hint">None yet.</p></div>
       </section>
 
       <section class="card" id="addons-card">
@@ -636,9 +646,51 @@ async function loadLearning() {
   $('lr-rules').innerHTML = d.ruleReviews?.length ? `<h4 class="sec">Worth a look</h4>${d.ruleReviews.map((r) => `<div class="lrow">A hard rule was overruled: <b>${esc(r.criterion)}</b> on ${esc(r.plugId)} (agent ${esc(r.recommendation)}, you ${esc(r.final)}). The agent will not change a hard rule by itself; check whether the rule needs changing.</div>`).join('')}` : ''
 }
 
+/* ---------- Fixes ready to apply ---------- */
+const FIX_STATE = { proposed: 'Ready', applied: 'Applied', undone: 'Undone', dismissed: 'Dismissed', 'nothing-applied': 'Nothing applied' }
+async function loadFixes() {
+  let d
+  try { d = await api('/api/fixes') } catch (e) { $('fix-list').innerHTML = `<p class="hint">${esc(e.message)}</p>`; return }
+  $('fix-off').style.display = d.writesEnabled ? 'none' : 'block'
+  const shown = d.fixes.filter((f) => f.status !== 'dismissed')
+  $('fix-list').innerHTML = shown.length ? shown.map((f) => {
+    const changes = f.ops.reduce((n, o) => n + o.entries.reduce((m, e) => m + Object.keys(e.set || {}).filter((k) => ['label', 'placeholder', 'help'].includes(k)).length, 0), 0)
+    const waiting = f.status === 'proposed' && !f.eligible
+    const badge = waiting ? '<span class="badge b-gray">Waiting for Improve</span>' : f.status === 'applied' ? '<span class="badge b-green">Applied</span>' : f.status === 'proposed' ? '<span class="badge b-amber">Ready</span>' : `<span class="badge b-gray">${esc(FIX_STATE[f.status] || f.status)}</span>`
+    return `<div class="fb" data-id="${esc(f.id)}"><b>${esc(f.plugName)}</b> <span class="id" style="color:var(--muted);font-size:12px">${esc(f.plugId)}</span> ${badge}
+      <div class="hint" style="margin-top:4px">${changes} wording change${changes === 1 ? '' : 's'} across ${f.ops.length} action${f.ops.length === 1 ? '' : 's'}${waiting ? ' · apply unlocks after a reviewer chooses Improve for this review' : ''}</div>
+      <div class="btnrow">
+        ${f.status === 'proposed' ? `<button data-fx="preview">Preview changes</button><button class="primary" data-fx="apply" ${f.eligible && d.writesEnabled ? '' : 'disabled'}>Apply to the draft</button><button class="linkbtn" data-fx="dismiss">Dismiss</button>` : ''}
+        ${f.status === 'applied' ? '<button data-fx="preview">View changes</button><button data-fx="undo">Undo</button>' : ''}
+      </div><div class="fxbox"></div></div>`
+  }).join('') : '<p class="hint">None yet. They appear after a review of a plug found in Developer Hub has wording to fix.</p>'
+  document.querySelectorAll('#fix-list .fb').forEach((el) => {
+    const id = el.dataset.id, box = el.querySelector('.fxbox')
+    const run = async (btn, text, fn) => { const old = btn.textContent; btn.disabled = true; btn.textContent = text; try { await fn() } catch (e) { toast(e.message) } btn.disabled = false; btn.textContent = old }
+    const diffHtml = (ops) => ops.map((o) => `<div class="diff"><b>${esc(o.actionName)}</b> <span class="hint">${esc(o.versionLabel || '')}</span>${o.note ? `<div class="hint">${esc(o.note)}</div>` : ''}
+      ${(o.applied || []).map((a) => `<div><code>${esc(a.field)}.${esc(a.prop)}</code> <span class="from">${esc(a.from || '(empty)')}</span> → <span class="to">${esc(a.to)}</span></div>`).join('') || '<div class="hint">Nothing to change.</div>'}
+      ${(o.skipped || []).map((k) => `<div class="hint">Skipped <code>${esc(k.field)}.${esc(k.prop)}</code>: ${esc(k.reason)}</div>`).join('')}</div>`).join('')
+    el.querySelectorAll('[data-fx]').forEach((b) => { b.onclick = () => {
+      const act = b.dataset.fx
+      if (act === 'preview') return run(b, 'Reading Developer Hub…', async () => { const r = await post('/api/fixes/' + id + '/preview', {}); box.innerHTML = diffHtml(r.ops) })
+      if (act === 'dismiss') return run(b, '…', async () => { await post('/api/fixes/' + id + '/dismiss', {}); loadFixes() })
+      if (act === 'apply') return run(b, 'Applying…', async () => {
+        const r = await post('/api/fixes/' + id + '/preview', {}); box.innerHTML = diffHtml(r.ops)
+        const n = r.ops.reduce((m, o) => m + (o.applied || []).length, 0)
+        if (!n) { toast('Nothing can be applied right now.'); return }
+        if (!confirm(`Write ${n} change${n === 1 ? '' : 's'} to the DRAFT in Developer Hub?\n\nA backup is taken first and you can undo it. Published versions are never edited.`)) return
+        const done = await post('/api/fixes/' + id + '/apply', { confirm: true })
+        toast(done.status === 'applied' ? 'Applied to the draft' : 'Nothing was applied'); loadFixes()
+      })
+      if (act === 'undo') return run(b, 'Undoing…', async () => { if (!confirm('Put the previous wording back in Developer Hub?')) return; const r = await post('/api/fixes/' + id + '/undo', {}); toast(r.status === 'undone' ? 'Undone' : 'Could not undo everything: ' + ((r.undo || []).map((u) => u.reason).filter(Boolean).join('; ') || 'see the record')); loadFixes() })
+    } })
+    if (el.querySelector('[data-fx=preview]') && el.querySelector('.badge.b-green')) { /* applied: show what was applied */ const f = shown.find((x) => x.id === id); box.innerHTML = diffHtml((f.results || []).filter((r) => r.status === 'applied').map((r) => ({ actionName: r.actionName, applied: r.applied, skipped: r.skipped }))) }
+  })
+}
+
 /* ---------- Boot ---------- */
 api('/api/viasocket/token').then((t) => { embedToken = t.token; renderApps() }).catch(() => renderApps())
-renderTestConnections(); loadGallery(); loadAddons(); loadLearning(); loadSettings().then(applyHints); loadDecisions(); setInterval(loadDecisions, 30000)
+renderTestConnections(); loadGallery(); loadAddons(); loadLearning(); loadFixes(); loadSettings().then(applyHints); loadDecisions(); setInterval(loadDecisions, 30000)
 </script>
 <script id="viasocket-connect-script" src="https://flow.viasocket.com/connect.js"></script>
 </body>

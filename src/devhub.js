@@ -6,6 +6,9 @@ const CODE_FIELDS = 'rowid,actionid,type,triggertype,versionid,perform,performli
 const TTL_MS = 5 * 60 * 1000
 const cache = new Map()
 
+/** Drop cached reads, so the next read sees what is really saved (used to verify a write). */
+export const forgetCache = () => cache.clear()
+
 export const isConfigured = () => Boolean(process.env.DEVHUB_TOKEN && process.env.DEVHUB_ORG && process.env.DEVHUB_API_BASE)
 
 const base = () => `${process.env.DEVHUB_API_BASE}/developers/${process.env.DEVHUB_ORG}`

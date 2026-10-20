@@ -48,6 +48,8 @@ export function schemaChecks(schema) {
         hits.I3.push(`${f.key} ("${f.label || f.key}" is free text)`)
         fix.set.suggestion = 'Make this a dropdown (an ID list from the app, or the fixed choices)'
       }
+      // What each property says now: an apply only goes ahead while it still says exactly this.
+      fix.was = Object.fromEntries(Object.keys(fix.set).filter((k) => ['label', 'placeholder', 'help'].includes(k)).map((k) => [k, f[k] == null ? '' : String(f[k])]))
       if (Object.keys(fix.set).length) patch.push(fix)
     }
     const text = { I1: 'Label or placeholder missing', I2: 'Help missing or badly written', I3: 'Free-text field that should be a dropdown' }

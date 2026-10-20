@@ -45,6 +45,17 @@ The submit form has a **Developer Hub link** field. Open an action or trigger in
 
 If the embed AI endpoint reports "Plan credits are exhausted", the shared AI helper (`src/review/ai.js`) falls back to the built-in Run AI Model action. Free-text add-on requests (`src/addons/analyze.js`) do not use it yet; the ready-made add-ons need no AI.
 
+## Applying the fixes (writes to Developer Hub, off by default)
+
+When a review of a plug found in Developer Hub has wording to fix (a missing label or placeholder, help that does not start with Enter or Select), the dashboard lists it under **Fixes ready to apply**. Applying is the only thing in this agent that writes to Developer Hub, and it is built to be hard to misuse:
+
+- **Off unless `DEVHUB_WRITES=1`.** Without it you can preview the exact changes but not apply them. `src/devhubwrite.js` is the only code that writes and can reach exactly one endpoint: save a version's fields. It cannot create, delete, publish or touch the plug or action itself.
+- **Only after a person chose Improve** for that review, and then pressed Apply and confirmed.
+- **Only label, placeholder and help**, only on a **draft** version. `required`, types, keys and code are never touched. Published versions are never edited (copying to a new draft is not built yet). A dropdown suggestion stays a suggestion.
+- **Nothing is overwritten that changed since the review**: each value is only replaced if it still says exactly what it said when the review ran.
+- **Backed up, verified, undoable.** The current fields are saved to `DATA_DIR/devhub-backups/` first; after the write they are read back from Developer Hub, and if they do not match the original is restored automatically. **Undo** puts the previous wording back, and refuses if the fields were edited again after the apply.
+- Tests: `scripts/fixes-test.mjs`, `scripts/fixops-test.mjs` (the failure branches, against an in-memory stand-in), and `scripts/fixes-live-test.mjs` (a reversible live test on a throwaway draft: snapshot, no-op write, apply, verify, undo, verify).
+
 ## Add-ons
 
 Users can build on top of the review agent without changing it. Pick a ready-made add-on (decision digest, reject alert, developer summary) or describe one in plain words. The agent turns the words into a small spec (AI), then checks it against reality in plain code: does the data exist, are the apps connected, is it something it can build. It shows a verdict (I can build this / part of this / I can't, and why) and builds nothing until the user approves. Then: preview (computed from the real decisions table and double-checked), send a test, turn on.

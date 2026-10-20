@@ -13,6 +13,9 @@ import { criteriaText } from './review/criteria.js'
 import { schemaChecks, liveFindings, buildCoverage } from './review/checks.js'
 import { isConfigured as devhubConfigured, findPlug, getPlugBundle, parseDevhubUrl } from './devhub.js'
 import { findDocs } from './review/docs.js'
+import { createFixStore } from './review/fixstore.js'
+import { createFixRouter } from './review/fixrouter.js'
+import { groupByOperation } from './review/fixes.js'
 import { codeChecks, definitionFromBundle, catalogShape } from './review/codechecks.js'
 import { searchApps } from './viasocket.js'
 
@@ -428,6 +431,12 @@ app.post('/api/live-test', (req, res) => {
       if (bundle) payload.plugName = scope ? `${bundle.plug.name} › ${scope.name}` : (row.plugName || bundle.plug.name)
       payload.scope = scope ? { type: scope.type, id: scope.actionId, name: scope.name, version: scope.versionLabel } : null
 
+      // Wording fixes the reviewer can apply later (only after choosing Improve, and only to a draft in Developer Hub).
+      if (bundle && schemaResult.patch.length) {
+        const ops = groupByOperation(bundle.operations, schemaResult.patch)
+        if (ops.length) fixStore.upsert({ key: row.plugId + (scope ? '#' + scope.actionId : ''), plugId: row.plugId, plugName: payload.plugName, pluginId: bundle.plug.rowid, scopeId: scope?.actionId || null, ops })
+      }
+
       // The API docs: the ones submitted, else a stored link, else found on the web, always saying how it was found.
       const submitted = String(row.docsUrl || '').trim()
       const docs = submitted ? { url: submitted, source: 'submitted with the plug', confidence: 'high', note: '' }
@@ -467,6 +476,10 @@ const learning = createLearning({
 })
 app.use('/api/learning', createLearningRouter({ learning }))
 setInterval(() => learning.sync().catch((e) => console.error('learning sync failed:', e.message)), 5 * 60 * 1000)
+
+// Fixes ready to apply: proposals from reviews, applied to a draft only on a person's confirmation.
+const fixStore = createFixStore({ dataDir: DATA_DIR, suffix: SUFFIX })
+app.use('/api/fixes', createFixRouter({ store: fixStore, readRows: () => readDecisionRows({ state: loadState(), settings: loadSettings() }) }))
 
 // Add-ons: built on top of the decisions data, in their own code and their own automations.
 app.use('/api/addons', createAddonsRouter({ loadState, loadSettings, dataDir: DATA_DIR, reviewerId: REVIEWER_ID }))
