@@ -29,17 +29,20 @@ function withOrigin(entry, status) {
   return Object.assign(entry, { httpStatus: status, origin: verdict.origin, originReason: verdict.reason })
 }
 
+const hasOperations = (schema) => Boolean(schema && ((schema.actions || []).length || (schema.triggers || []).length))
+
 /** Find the published app a queue row points at: ids in the Developer Hub URL first, then the name. */
 export async function resolvePlug({ plugName, dhUrl }) {
   for (const id of new Set(String(dhUrl || '').match(ROW_ID) || [])) {
     const schema = await getAppSchema(id).catch(() => null)
-    if (schema) return { serviceId: id, name: schema.service.name, via: 'developer hub url', schema }
+    // An unpublished plug has a catalog entry with no operations: that is not a plug to test, so keep looking.
+    if (hasOperations(schema)) return { serviceId: id, name: schema.service.name, via: 'developer hub url', schema }
   }
   const found = await searchApps(plugName || '').catch(() => [])
   const exact = found.filter((app) => String(app.name).toLowerCase() === String(plugName || '').toLowerCase())
   if (exact.length === 1) {
     const schema = await getAppSchema(exact[0].service_id)
-    if (schema) return { serviceId: exact[0].service_id, name: exact[0].name, via: 'name search', schema }
+    if (hasOperations(schema)) return { serviceId: exact[0].service_id, name: exact[0].name, via: 'name search', schema }
   }
   return { unresolved: true, candidates: found.slice(0, 5).map((a) => ({ id: a.service_id, name: a.name })) }
 }

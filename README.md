@@ -28,6 +28,15 @@ The verdict is decided by rule (`src/review/criteria.js`, `verdict.js`), not by 
 
 **Testing changes to the core safely.** The viaSocket flows are shared with the hosted app, so a code branch alone does not isolate them. Run `STAGING=1 PORT=3001 APP_PASSWORD=... node --env-file=.env src/server.js` and save settings on it: it creates separate `STAGING:` flows and its own settings and learning files, with no queue trigger. Offline tests: `node scripts/criteria-test.mjs`, `node scripts/learning-test.mjs`; `scripts/lesson-ai-test.mjs` runs the real AI lesson writer.
 
+## Developer Hub (read only)
+
+With `DEVHUB_ORG`, `DEVHUB_TOKEN` and `DEVHUB_API_BASE` set, the agent reads the plug under review from Developer Hub (`src/devhub.js`). **It can only issue GET requests: nothing in this agent changes a plug.** The token is a Developer Hub session token (the `proxy_auth_token` header of requests to `https://flow-api.viasocket.com`, not `dev-api`); it expires, and then plug code shows as "not assessed" until it is replaced.
+
+- The plug is found by the Developer Hub id in the queue row's URL, then by the catalog id, then by an exact name. If two plugs share the name the agent does not guess: it says so and a person decides.
+- **R3 and R4 run on the plug's real code** (`src/review/codechecks.js`), following viaSocket's own review rules: `errorComponent` awaited in the catch and every component used is mapped (R3); the code parses, runs inside try/catch, validates required inputs before the request, reads only inputs a field defines, and builds no credentials by hand (R4). Missing optional chaining is an improve-level note (I4), not a reject. Constant sample payloads, `authData` inside a URL, and required fixed-choice dropdowns are not flagged.
+- A draft or private plug (not in the public catalog) now gets a real definition from Developer Hub, so the schema checks (I1 to I3) and the docs comparison (R2) run on it. Live runs for such plugs (R1) are not built yet and are reported as not assessed.
+- A same-named public app is never used in place of the plug under review.
+
 ## Add-ons
 
 Users can build on top of the review agent without changing it. Pick a ready-made add-on (decision digest, reject alert, developer summary) or describe one in plain words. The agent turns the words into a small spec (AI), then checks it against reality in plain code: does the data exist, are the apps connected, is it something it can build. It shows a verdict (I can build this / part of this / I can't, and why) and builds nothing until the user approves. Then: preview (computed from the real decisions table and double-checked), send a test, turn on.

@@ -72,7 +72,7 @@ let audit = {}
 if (!hasDefinition) {
   // Never judge what cannot be seen: no definition means a person decides, never an auto-reject.
   console.log('### No plug definition supplied: nothing to judge')
-  audit = { recommendation: 'incomplete', summary: 'No plug definition was available to audit. A person has to decide.', findings: [], unverified: ['plug definition not available: nothing was audited'], patch: [], notCounted: [], coverage: { notAssessed: ['R1', 'R2', 'R3', 'R4'] } }
+  audit = { recommendation: 'incomplete', summary: 'No plug definition was available to audit. A person has to decide.', findings: [], unverified: ['plug definition not available: ' + ((body.liveResults && body.liveResults.reason) || 'nothing was audited')], patch: [], notCounted: [], coverage: { notAssessed: ['R1', 'R2', 'R3', 'R4'] } }
 } else {
   const result = await runAiModel({ inputData: {
     query: 'Review this viaSocket plug against the official API docs at ' + body.docsUrl + '. Plug definition (JSON): ' + JSON.stringify(plug).slice(0, 9000) + '\\nLive test results (JSON, for context): ' + JSON.stringify(body.liveResults || { status: 'not_tested' }).slice(0, 3000),
@@ -90,7 +90,7 @@ if (!hasDefinition) {
   const outcome = decideVerdict(pre.concat(aiFindings), { complete: notAssessed.length === 0, notAssessed })
   const why = { R1: 'no live run completed', R2: 'API docs not read', R3: 'plug code not available (error component)', R4: 'plug code not available (validation)' }
   const counts = outcome.counted.reduce((n, f) => { n[f.severity === 'blocking' ? 0 : 1]++; return n }, [0, 0])
-  audit = { recommendation: outcome.verdict, summary: (outcome.verdict + ': ' + counts[0] + ' reject and ' + counts[1] + ' improve finding(s). ' + (ai.summary || '')).slice(0, 400), findings: outcome.counted, unverified: notAssessed.map((id) => id + ' not assessed: ' + (why[id] || 'unknown')), patch: body.patch || [], notCounted: body.notCounted || [], coverage: { notAssessed }, droppedFindings: outcome.dropped }
+  audit = { recommendation: outcome.verdict, summary: (outcome.verdict + ': ' + counts[0] + ' reject and ' + counts[1] + ' improve finding(s). ' + (ai.summary || '')).slice(0, 400), findings: outcome.counted, unverified: notAssessed.map((id) => id + ' not assessed: ' + ((body.coverage && body.coverage.reasons && body.coverage.reasons[id]) || why[id] || 'unknown')), patch: body.patch || [], notCounted: body.notCounted || [], coverage: { notAssessed }, droppedFindings: outcome.dropped }
 }
 const handoff = await axios.post(${JSON.stringify(decideUrl)}, {
   plugId: body.plugId, plugName: body.plugName, assigneeSlackId: body.assigneeSlackId, assigneeName: body.assigneeName,

@@ -11,6 +11,8 @@ import { readDecisionRows } from './review/rows.js'
 import { askJson } from './review/ai.js'
 import { criteriaText } from './review/criteria.js'
 import { schemaChecks, liveFindings, buildCoverage } from './review/checks.js'
+import { isConfigured as devhubConfigured, findPlug, getPlugBundle } from './devhub.js'
+import { codeChecks, definitionFromBundle, catalogShape } from './review/codechecks.js'
 import { searchApps } from './viasocket.js'
 
 const REVIEWER_ID = process.env.REVIEWER_ID || 'plug-reviewer'
@@ -375,19 +377,50 @@ app.post('/api/live-test', (req, res) => {
     const payload = { ...row }
     try {
       const plug = await resolvePlug({ plugName: row.plugName, dhUrl: row.plug?.developerHubUrl })
-      if (plug.unresolved) {
-        payload.liveResults = { status: 'not_resolved', reason: 'Could not match this plug to a published app. Candidates: ' + plug.candidates.map((c) => c.name).join(', ') }
-      } else {
+
+      // The plug in Developer Hub (read only): its real code, for R3 and R4, and a definition even for a draft.
+      let bundle = null, devhubNote = null, ambiguous = false, lookupFailed = false
+      if (!devhubConfigured()) devhubNote = 'Developer Hub is not configured'
+      else {
+        try {
+          const hit = await findPlug({ dhUrl: row.plug?.developerHubUrl, serviceId: plug.serviceId, name: row.plugName })
+          if (!hit.plug) { devhubNote = hit.reason; ambiguous = Boolean(hit.ambiguous) }
+          else {
+            bundle = await getPlugBundle(hit.plug)
+            if (!bundle.operations.length) { devhubNote = `"${hit.plug.name}" has no actions or triggers with a saved version yet`; bundle = null }
+          }
+        } catch (error) { devhubNote = error.message; lookupFailed = true }
+      }
+
+      // The catalog only counts when it is the same plug Developer Hub holds. A public app that merely shares
+      // the name is a different plug, and its definition must not stand in for the plug under review.
+      const sameAsCatalog = !plug.unresolved && bundle && plug.serviceId === bundle.plug.rowid
+      let schemaResult = { findings: [], patch: [] }
+      // If Developer Hub cannot say which plug is meant (ambiguous name, or the lookup failed), the catalog is not
+      // used as a stand-in: a same-named public app is a different plug and must never be reviewed in its place.
+      if (!plug.unresolved && !ambiguous && !lookupFailed && (!bundle || sameAsCatalog)) {
         payload.plug = { ...row.plug, ...definitionFrom(plug.schema) }
         payload.liveResults = await runLiveTests(plug)
-        // Rules decided by code: schema checks (I1, I2, I3) and live failures that are the plug's own (R1).
-        const schema = schemaChecks(plug.schema), live = liveFindings(payload.liveResults)
-        payload.preFindings = [...live.findings, ...schema.findings]
-        payload.patch = schema.patch
-        payload.notCounted = live.notCounted
+        schemaResult = schemaChecks(plug.schema)
+      } else if (bundle) {
+        // Not the catalog's plug (a draft, or private): Developer Hub supplies the definition. Live runs for these come later.
+        payload.plug = { ...row.plug, ...definitionFromBundle(bundle) }
+        payload.liveResults = { status: 'not_tested', reason: 'This plug is not in the public catalog (a draft or private plug): live runs for these are not built yet' }
+        schemaResult = schemaChecks(catalogShape(bundle))
+      } else {
+        payload.liveResults = { status: 'not_resolved', reason: 'Could not match this plug to a published app or find it in Developer Hub. ' + (devhubNote || '') + (plug.candidates?.length ? ' Catalog candidates: ' + plug.candidates.map((c) => c.name).join(', ') : '') }
       }
-      // Plug code (R3, R4) needs Developer Hub access, which is not connected: those stay "not assessed".
-      payload.coverage = buildCoverage({ live: payload.liveResults, codeAvailable: false })
+      const live = liveFindings(payload.liveResults)
+      const code = bundle ? codeChecks(bundle) : { findings: [], stats: null }
+      // Rules decided by code: schema checks (I1, I2, I3), live failures that are the plug's own (R1), plug code (R3, R4).
+      payload.preFindings = [...live.findings, ...code.findings, ...schemaResult.findings]
+      payload.patch = schemaResult.patch
+      payload.notCounted = live.notCounted
+      // Plug code is only "assessed" when Developer Hub really supplied it; otherwise R3 and R4 stay "not assessed".
+      payload.coverage = buildCoverage({ live: payload.liveResults, codeAvailable: Boolean(bundle) })
+      if (!bundle) payload.coverage.reasons = { R3: 'plug code not read: ' + devhubNote, R4: 'plug code not read: ' + devhubNote }
+      else if (payload.liveResults.status !== 'tested') payload.coverage.reasons = { R1: payload.liveResults.reason }
+      payload.devhub = bundle ? { plug: bundle.plug.name, status: bundle.plug.status, versions: code.stats.versions.slice(0, 12), codeBlocks: code.stats.codeBlocks } : { note: devhubNote }
       try { payload.criteriaText = criteriaText(learning.activeLessons()) } catch { /* the review falls back to the criteria baked into the flow */ }
     } catch (error) {
       payload.liveResults = { status: 'error', reason: error.message }
