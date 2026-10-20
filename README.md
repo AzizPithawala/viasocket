@@ -6,7 +6,7 @@ An agent that reviews viaSocket plugs, asks the reviewer in Slack, and records e
 
 - **Live tests (published plugs):** the queue row's Developer Hub URL (or the plug name) is matched to a published app. The hosted app runs every *read* action and fetches one event per trigger on a test connection, and the results go into the audit and the Slack message. Write actions are never run. A failed live read is a blocking finding quoted with the real error; a missing connection or skipped test is reported as unverified, never as a reject.
 - Reject runs without a click only when the audit and the re-check both say reject.
-- Approve and Improve wait for a click. They record a status but do **not** call Developer Hub yet (not connected).
+- Approve and Improve wait for a click. They record a status but change nothing in Developer Hub: the agent only reads it (read-only by design), and applying fixes or granting publish access is not built yet.
 - With no plug definition, nothing is audited or auto-rejected: the reviewer decides.
 
 ## Choosing accounts
@@ -19,7 +19,7 @@ The verdict is decided by rule (`src/review/criteria.js`, `verdict.js`), not by 
 
 - **Reject** (any one, with evidence): R1 a live run fails because of the plug (SaaS-side failures are not counted); R2 a parameter in the API docs is missing from the action; R3 the error component is not imported; R4 code validation is not handled.
 - **Improve**: I1 label or placeholder missing; I2 help missing or badly written; I3 a text field that should be a dropdown; I4 other UX/UI problems. Improve comes with a ready-to-apply patch (proposed labels, placeholders, help).
-- **Approve** only when nothing is found **and** every reject check was actually assessed. R3 and R4 need the plug's code from Developer Hub, which is not connected, so today a clean plug is reported as **incomplete**, never approve.
+- **Approve** only when nothing is found **and** every reject check was actually assessed. R3 and R4 run on the plug's real code read from Developer Hub; when that code cannot be read (the plug is not in the org, the name is ambiguous, or the token expired) they are "not assessed", and a clean plug is reported as **incomplete**, never approve.
 - Live failures are classified by whose fault they are (`plug`, `saas`, `unknown`). Only the plug's own failures can reject; unclear ones go to a person.
 
 **Points.** The agent earns +1 when the final decision matches its recommendation and loses 2 when the reviewer overrules it. Automatic rejects wait on the dashboard for Correct (+1) or Wrong (-2). Scores come from the decisions table the core already writes, so the decision flow is untouched. Nothing is scored for an `incomplete` review (it made no claim), and decisions that existed when learning first started are not scored.
@@ -76,7 +76,7 @@ npm run dev
 
 ## Known limits
 
-- Live tests need a published plug and a test connection made in the browser. Draft plugs are not tested live (Developer Hub's test API is not connected).
+- Live tests need a published plug and a test connection made in the browser. Draft and private plugs are not run live yet (not built; Developer Hub's dry-run endpoint could do it).
 - Required free-text inputs are never invented, so an action that needs them is reported as not run.
 - Intake is polled, so a queue row starts a review about two minutes later.
 - Data in `DATA_DIR` is not backed up.

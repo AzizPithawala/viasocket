@@ -447,7 +447,7 @@ async function loadDecisions() {
       <div class="top"><span class="badge ${cls}">${esc(label)}</span><span class="title">${esc(d.plugName || d.plugId)}</span><span class="id">${esc(d.plugId)}</span><span class="when">${esc(ago(d.decidedAt))}</span></div>
       <div class="reason">${esc((reasonText || '').split(' | ').join('\n'))}</div>
       <div class="meta">${d.assignee ? 'Developer: ' + esc(d.assignee) + ' · ' : ''}${esc(d.decidedBy || '')}</div>
-      ${pending ? '<div class="note">Recorded only. Developer Hub is not connected, so nothing was published or changed.</div>' : note ? `<div class="meta">${esc(note)}</div>` : ''}
+      ${pending ? '<div class="note">Recorded only. The agent reads Developer Hub but does not change plugs yet, so nothing was published or changed.</div>' : note ? `<div class="meta">${esc(note)}</div>` : ''}
     </div>`
   }).join('')
   document.querySelectorAll('.decision').forEach((el) => {

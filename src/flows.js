@@ -175,9 +175,9 @@ if (d.decision === 'reject') {
   }
   note = 'Reject message sent to ' + targets.length + ' recipient(s)'
 } else {
-  // Developer Hub access is not connected yet: record the decision, do NOT claim the action ran.
+  // The agent reads Developer Hub but does not change plugs yet: record the decision, do NOT claim the action ran.
   status = d.decision === 'approve' ? 'approved_publish_not_executed' : 'improve_update_not_executed'
-  note = 'Developer Hub not connected: ' + (d.decision === 'approve' ? 'publish access not granted' : 'plug not updated')
+  note = 'Developer Hub is connected read-only, so the agent does not ' + (d.decision === 'approve' ? 'grant publish access yet: nothing was published' : 'apply fixes yet: the plug was not changed')
   await dm({ inputData: { userId: ${S(settings.tlUserId)}, content: '*' + b.plugName + '*: reviewer chose ' + d.decision + '. ' + note, isScheduledMessage: 'no', bot_details: { bot_name: 'Plug Review Agent', customIcon: false } } })
 }
 await addRow({ inputData: {
