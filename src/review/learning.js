@@ -34,7 +34,13 @@ export function createLearning({ dataDir, suffix = '', readRows, askJson, baseli
   mkdirSync(dataDir, { recursive: true })
   const file = `${dataDir}/learning${suffix}.json`
   const empty = () => ({ score: 0, history: [], pending: {}, processed: {}, lessons: [], ruleReviews: [] })
-  const load = () => (existsSync(file) ? { ...empty(), ...JSON.parse(readFileSync(file, 'utf8')) } : empty())
+  const load = () => {
+    if (!existsSync(file)) return empty()
+    const state = { ...empty(), ...JSON.parse(readFileSync(file, 'utf8')) }
+    // A damaged entry must never break a review: keep only well-formed lessons.
+    state.lessons = (Array.isArray(state.lessons) ? state.lessons : []).filter((l) => l && typeof l === 'object' && l.criterion && l.guidance)
+    return state
+  }
   const save = (state) => { writeFileSync(`${file}.tmp`, JSON.stringify(state, null, 2)); renameSync(`${file}.tmp`, file) }
 
   /** Turn an overrule into a lesson, with guardrails. Never throws: a missing lesson must not lose the points. */
@@ -131,7 +137,8 @@ export function createLearning({ dataDir, suffix = '', readRows, askJson, baseli
     save(state); return summary(state)
   }
 
-  const activeLessons = () => load().lessons.filter((l) => l.active).sort((a, b) => b.points - a.points).slice(0, MAX_LESSONS)
+  // Learning is an extra: if it cannot be read, a review simply runs without lessons.
+  const activeLessons = () => { try { return load().lessons.filter((l) => l.active).sort((a, b) => b.points - a.points).slice(0, MAX_LESSONS) } catch { return [] } }
 
   function summary(state = load()) {
     const scored = state.history.filter((h) => h.outcome === 'agreed' || h.outcome === 'overruled').slice(0, 30)

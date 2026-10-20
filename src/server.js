@@ -388,7 +388,7 @@ app.post('/api/live-test', (req, res) => {
       }
       // Plug code (R3, R4) needs Developer Hub access, which is not connected: those stay "not assessed".
       payload.coverage = buildCoverage({ live: payload.liveResults, codeAvailable: false })
-      payload.criteriaText = criteriaText(learning.activeLessons())
+      try { payload.criteriaText = criteriaText(learning.activeLessons()) } catch { /* the review falls back to the criteria baked into the flow */ }
     } catch (error) {
       payload.liveResults = { status: 'error', reason: error.message }
     }

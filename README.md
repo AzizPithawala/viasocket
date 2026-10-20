@@ -13,6 +13,21 @@ An agent that reviews viaSocket plugs, asks the reviewer in Slack, and records e
 
 Slack and viaSocket Table each have a dropdown listing every connected account (for example the Slack workspace or the Table database). Pick one to make it active, or choose "Connect another account…". Old connections are kept. Switching clears the saved channel, team leader and table picks, because they belong to the old account; pick them again and save so the automations use the new account. Saving checks that the chosen tables have the required columns. To use a different login, use the **Use a different login** link under the app: the sign-in popup always uses the account the browser is already signed into and the agent cannot change that, so the connection is made in a private window. The page notices the new account within a few seconds and offers **Use this account**. After switching, the pickers preselect `plug_decisions` and `plug_queue` if the new account already has them, and a **Required table columns** box lists what to create otherwise (with a **Check** button). Accounts that are not in use can be removed.
 
+## Review criteria and learning
+
+The verdict is decided by rule (`src/review/criteria.js`, `verdict.js`), not by the AI's judgement. The AI only reports findings with evidence; code applies the rules.
+
+- **Reject** (any one, with evidence): R1 a live run fails because of the plug (SaaS-side failures are not counted); R2 a parameter in the API docs is missing from the action; R3 the error component is not imported; R4 code validation is not handled.
+- **Improve**: I1 label or placeholder missing; I2 help missing or badly written; I3 a text field that should be a dropdown; I4 other UX/UI problems. Improve comes with a ready-to-apply patch (proposed labels, placeholders, help).
+- **Approve** only when nothing is found **and** every reject check was actually assessed. R3 and R4 need the plug's code from Developer Hub, which is not connected, so today a clean plug is reported as **incomplete**, never approve.
+- Live failures are classified by whose fault they are (`plug`, `saas`, `unknown`). Only the plug's own failures can reject; unclear ones go to a person.
+
+**Points.** The agent earns +1 when the final decision matches its recommendation and loses 2 when the reviewer overrules it. Automatic rejects wait on the dashboard for Correct (+1) or Wrong (-2). Scores come from the decisions table the core already writes, so the decision flow is untouched. Nothing is scored for an `incomplete` review (it made no claim), and decisions that existed when learning first started are not scored.
+
+**Lessons.** Each overrule is turned into one short correction (AI-written, validated) that is added to the next reviews' prompt. Lessons may only adjust the judgement checks (R2, I3, I4); an overrule of a hard rule is flagged for a person and never softens the rule. Each lesson earns and loses points of its own and retires itself at -4; any lesson can be switched off. State is in `DATA_DIR/learning.json` (not backed up).
+
+**Testing changes to the core safely.** The viaSocket flows are shared with the hosted app, so a code branch alone does not isolate them. Run `STAGING=1 PORT=3001 APP_PASSWORD=... node --env-file=.env src/server.js` and save settings on it: it creates separate `STAGING:` flows and its own settings and learning files, with no queue trigger. Offline tests: `node scripts/criteria-test.mjs`, `node scripts/learning-test.mjs`; `scripts/lesson-ai-test.mjs` runs the real AI lesson writer.
+
 ## Add-ons
 
 Users can build on top of the review agent without changing it. Pick a ready-made add-on (decision digest, reject alert, developer summary) or describe one in plain words. The agent turns the words into a small spec (AI), then checks it against reality in plain code: does the data exist, are the apps connected, is it something it can build. It shows a verdict (I can build this / part of this / I can't, and why) and builds nothing until the user approves. Then: preview (computed from the real decisions table and double-checked), send a test, turn on.
